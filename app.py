@@ -249,9 +249,10 @@ elif page == "Recipes":
     for idx, r in enumerate(recipes):
         card(r, grid[idx % 3])
 
-    st.divider()
-    st.subheader("New Recipe")
-    with st.form("new_recipe"):
+   st.divider()
+st.subheader("Nuova ricetta")
+
+with st.form("new_recipe"):
     name = st.text_input("Nome ricetta *")
     category = st.text_input("Categoria", value="")
     time_m = st.number_input("Tempo (minuti)", 0, 240, 30)
@@ -274,7 +275,11 @@ elif page == "Recipes":
         ings = []
         for _, row in ing_df.iterrows():
             if str(row["Ingredient"]).strip():
-                ings.append({"name": row["Ingredient"], "qty": float(row["Qty"]), "unit": row["Unit"]})
+                ings.append({
+                    "name": row["Ingredient"],
+                    "qty": float(row["Qty"]),
+                    "unit": row["Unit"]
+                })
         if not name or not ings:
             st.error("Nome e almeno 1 ingrediente sono obbligatori.")
         else:

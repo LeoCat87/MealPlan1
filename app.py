@@ -252,21 +252,24 @@ elif page == "Recipes":
     st.divider()
     st.subheader("New Recipe")
     with st.form("new_recipe"):
-        name = st.text_input("Recipe Name *")
-        category = st.text_input("Category", value="")
-        time_m = st.number_input("Cooking Time (minutes)", 0, 240, 30)
-        servings = st.number_input("Servings", 1, 20, 2)
-        description = st.text_area("Description", value="")
-        image = st.text_input("Image URL", value="")
-           st.markdown("**Ingredienti**")
+    name = st.text_input("Nome ricetta *")
+    category = st.text_input("Categoria", value="")
+    time_m = st.number_input("Tempo (minuti)", 0, 240, 30)
+    servings = st.number_input("Porzioni", 1, 20, 2)
+    description = st.text_area("Descrizione", value="")
+    image = st.text_input("URL immagine", value="")
+
+    st.markdown("**Ingredienti**")
     ing_df = st.data_editor(
         pd.DataFrame([{"Ingredient": "", "Qty": 0, "Unit": UNITS[0]}]),
         num_rows="dynamic",
         use_container_width=True,
         key="new_ing_table",
     )
+
     instructions = st.text_area("Istruzioni")
     submitted = st.form_submit_button("Aggiungi ricetta")
+
     if submitted:
         ings = []
         for _, row in ing_df.iterrows():

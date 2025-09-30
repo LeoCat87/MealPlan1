@@ -246,12 +246,35 @@ elif page == "Recipes":
     st.divider()
     st.subheader("New Recipe")
     with st.form("new_recipe"):
-        name = st.text_input("Recipe Name *")
-        category = st.text_input("Category", value="")
-        time_m = st.number_input("Cooking Time (minutes)", 0, 240, 30)
-        servings = st.number_input("Servings", 1, 20, 2)
-        description = st.text_area("Description", value="")
-        image = st.text_input("Image URL", value="")
         st.markdown("**Ingredients**")
-        ing_df = st.data_editor(
-            pd.DataFrame([{"
+ing_df = st.data_editor(
+    pd.DataFrame([{"Ingredient": "", "Qty": 0, "Unit": UNITS[0]}]),
+    num_rows="dynamic",
+    use_container_width=True,
+    key="new_ing_table",
+)
+instructions = st.text_area("Instructions")
+submitted = st.form_submit_button("Add Recipe")
+if submitted:
+    ings = []
+    for _, row in ing_df.iterrows():
+        if str(row["Ingredient"]).strip():
+            ings.append({"name": row["Ingredient"], "qty": float(row["Qty"]), "unit": row["Unit"]})
+    if not name or not ings:
+        st.error("Name and at least 1 ingredient are required.")
+    else:
+        next_id = max([r["id"] for r in st.session_state.recipes] + [0]) + 1
+        st.session_state.recipes.append({
+            "id": next_id,
+            "name": name,
+            "category": category,
+            "time": int(time_m),
+            "servings": int(servings),
+            "description": description,
+            "image": image,
+            "ingredients": ings,
+            "instructions": instructions,
+        })
+        st.success(f"Added {name}!")
+        st.experimental_rerun()
+

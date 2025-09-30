@@ -227,7 +227,6 @@ elif page == "Recipes":
     def card(r, container):
         with container:
             if r.get("image"):
-                if r.get("image"):
                 st.image(r["image"], use_container_width=True)
             else:
                 st.image("https://via.placeholder.com/400x200.png?text=No+Image", use_container_width=True)

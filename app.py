@@ -227,6 +227,7 @@ elif page == "Recipes":
     def card(r, container):
         with container:
             if r.get("image"):
+                if r.get("image"):
                 st.image(r["image"], use_container_width=True)
             else:
                 st.image("https://via.placeholder.com/400x200.png?text=No+Image", use_container_width=True)
@@ -375,23 +376,13 @@ else:
     st.dataframe(df, use_container_width=True, hide_index=True)
 
     # Export Excel
-buffer = BytesIO()
-with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-    df.to_excel(writer, index=False, sheet_name="ShoppingList")
-st.download_button(
-    "Export List (Excel)",
-    data=buffer.getvalue(),
-    file_name="shopping_list.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-)
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+        df.to_excel(writer, index=False, sheet_name="ShoppingList")
+    st.download_button("Export List (Excel)", data=buffer.getvalue(), file_name="shopping_list.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-# Export CSV (fallback/alternative)
-csv_data = df.to_csv(index=False).encode("utf-8")
-st.download_button(
-    "Export List (CSV)",
-    data=csv_data,
-    file_name="shopping_list.csv",
-    mime="text/csv"
-)
+    # Export CSV (fallback/alternative)
+    csv_data = df.to_csv(index=False).encode("utf-8")
+    st.download_button("Export List (CSV)", data=csv_data, file_name="shopping_list.csv", mime="text/csv"), file_name="shopping_list.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 st.caption("Made with Streamlit · MVP")

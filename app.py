@@ -187,6 +187,8 @@ if page == "Weekly Planner":
 
     st.caption(f"Week: {st.session_state.week_start.strftime('%b %d, %Y')} - "
                f"{(st.session_state.week_start + timedelta(days=6)).strftime('%b %d, %Y')}")
+    if st.button("🧹 Reset week"):
+        st.session_state.planner = _empty_week(st.session_state.week_start)
 
     # Day columns
     day_cols = st.columns(7)
@@ -225,6 +227,7 @@ elif page == "Recipes":
     def card(r, container):
         with container:
             if r.get("image"):
+                if r.get("image"):
                 st.image(r["image"], use_container_width=True)
             else:
                 st.image("https://via.placeholder.com/400x200.png?text=No+Image", use_container_width=True)
@@ -332,7 +335,13 @@ else:
     st.header("Shopping List")
 
     def aggregate_shopping_list():
-        agg: dict[tuple[str, str], float] = {}
+        # Unit normalization (g<->kg, ml<->l). Others aggregate by same unit.
+        to_base = {
+            "g": ("g", 1), "kg": ("g", 1000),
+            "ml": ("ml", 1), "l": ("ml", 1000),
+            "pcs": ("pcs", 1), "tbsp": ("tbsp", 1), "tsp": ("tsp", 1)
+        }
+        agg_base: dict[tuple[str, str], float] = {}
         for d in st.session_state.planner["days"]:
             for meal in MEALS:
                 slot = d[meal]
@@ -343,12 +352,23 @@ else:
                     continue
                 scale = servings_needed / max(1, recipe.get("servings", 1))
                 for ing in recipe.get("ingredients", []):
-                    key = (ing["name"].strip().title(), ing["unit"])  # same unit aggregation
-                    agg[key] = agg.get(key, 0) + ing["qty"] * scale
-        # Present as DataFrame sorted by ingredient
-        rows = [
-            {"Ingredient": k[0], "Qty": round(v, 2), "Unit": k[1]} for k, v in sorted(agg.items(), key=lambda x: x[0][0])
-        ]
+                    name = ing["name"].strip().title()
+                    unit = str(ing.get("unit", "")).lower()
+                    qty = float(ing.get("qty", 0)) * scale
+                    base_unit, factor = to_base.get(unit, (unit, 1))
+                    qty_base = qty * factor
+                    key = (name, base_unit)
+                    agg_base[key] = agg_base.get(key, 0) + qty_base
+        # Present in friendly units (prefer kg/l if >=1000 base units)
+        rows = []
+        for (name, base_unit), qty_base in sorted(agg_base.items(), key=lambda x: x[0][0]):
+            if base_unit == "g" and qty_base >= 1000:
+                qty, unit = round(qty_base / 1000, 2), "kg"
+            elif base_unit == "ml" and qty_base >= 1000:
+                qty, unit = round(qty_base / 1000, 2), "l"
+            else:
+                qty, unit = round(qty_base, 2), base_unit
+            rows.append({"Ingredient": name, "Qty": qty, "Unit": unit})
         return pd.DataFrame(rows)
 
     df = aggregate_shopping_list()
@@ -360,5 +380,9 @@ else:
     with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
         df.to_excel(writer, index=False, sheet_name="ShoppingList")
     st.download_button("Export List (Excel)", data=buffer.getvalue(), file_name="shopping_list.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+    # Export CSV (fallback/alternative)
+    csv_data = df.to_csv(index=False).encode("utf-8")
+    st.download_button("Export List (CSV)", data=csv_data, file_name="shopping_list.csv", mime="text/csv"), file_name="shopping_list.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 st.caption("Made with Streamlit · MVP")

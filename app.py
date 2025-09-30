@@ -225,7 +225,9 @@ elif page == "Recipes":
     def card(r, container):
         with container:
             if r.get("image"):
-                st.image(r["image"], use_container_width=True)
+    st.image(r["image"], use_container_width=True)
+else:
+    st.image("https://via.placeholder.com/400x200.png?text=No+Image", use_container_width=True)
             st.subheader(r["name"])
             st.caption(f"{r['category']} · {r['time']} min · serves {r['servings']}")
             st.write(r.get("description", ""))

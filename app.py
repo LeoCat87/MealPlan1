@@ -3,6 +3,7 @@ import pandas as pd
 from io import BytesIO
 from datetime import date, timedelta
 import json
+from typing import List, Dict, Any
 
 # -----------------------------
 # Config / Costanti
@@ -13,6 +14,20 @@ MEALS = ["Pranzo", "Cena"]
 UNITS = ["g", "kg", "ml", "l", "pcs", "tbsp", "tsp"]
 DATA_FILE = "mealplanner_data.json"
 
+# -----------------------------
+# Utilità
+# -----------------------------
+def _safe_int(x, default=0):
+    try:
+        return int(x)
+    except Exception:
+        return default
+
+def _safe_float(x, default=0.0):
+    try:
+        return float(x)
+    except Exception:
+        return default
 
 # -----------------------------
 # Stato iniziale
@@ -25,9 +40,12 @@ def _init_state():
     if "week_start" not in st.session_state:
         today = date.today()
         st.session_state.week_start = today - timedelta(days=today.weekday())
+    if "recipe_form_mode" not in st.session_state:
+        st.session_state.recipe_form_mode = "add"  # add | edit
+    if "editing_recipe_id" not in st.session_state:
+        st.session_state.editing_recipe_id = None
     # normalizza planner (utile se hai vecchie chiavi LUNCH/DINNER)
     st.session_state.planner = _normalize_planner_meal_keys(st.session_state.planner, MEALS)
-
 
 def _empty_week(start: date | None = None):
     if start is None:
@@ -42,7 +60,6 @@ def _empty_week(start: date | None = None):
             **day_slots,
         })
     return week
-
 
 def _demo_recipes():
     return [
@@ -82,10 +99,14 @@ def _demo_recipes():
         },
     ]
 
+def _get_new_recipe_id() -> int:
+    if not st.session_state.recipes:
+        return 1
+    return max(r["id"] for r in st.session_state.recipes) + 1
 
 def _get_recipe_options():
-    return {r["name"]: r["id"] for r in st.session_state.recipes}
-
+    # mappa: label -> id
+    return {f'{r["name"]} · {r.get("time","-")} min': r["id"] for r in st.session_state.recipes}
 
 def _find_recipe(rid):
     if rid is None:
@@ -94,7 +115,6 @@ def _find_recipe(rid):
         if r["id"] == rid:
             return r
     return None
-
 
 # -----------------------------
 # Normalizzazione planner
@@ -124,7 +144,6 @@ def _normalize_planner_meal_keys(planner, expected_meals):
     planner["days"] = new_days
     return planner
 
-
 # -----------------------------
 # Persistenza dati
 # -----------------------------
@@ -137,12 +156,12 @@ def save_to_file():
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-
 def load_from_file():
     try:
         with open(DATA_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-        st.session_state.recipes = data.get("recipes", st.session_state.recipes)
+        if data.get("recipes"):
+            st.session_state.recipes = data.get("recipes", st.session_state.recipes)
         st.session_state.planner = data.get("planner", st.session_state.planner)
         if "week_start" in data:
             st.session_state.week_start = date.fromisoformat(data["week_start"])
@@ -150,10 +169,29 @@ def load_from_file():
         st.success("Dati caricati dal file locale.")
     except FileNotFoundError:
         st.warning("Nessun file locale trovato: verranno usati i dati demo.")
+    except Exception as e:
+        st.error(f"Errore nel caricamento: {e}")
 
+def export_recipes_json() -> bytes:
+    payload = {"recipes": st.session_state.recipes}
+    return json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+
+def import_recipes_json(file_bytes: bytes):
+    try:
+        payload = json.loads(file_bytes.decode("utf-8"))
+        incoming: List[Dict[str, Any]] = payload.get("recipes", [])
+        # Mantiene gli ID esistenti, assegna ID nuovi se collisione
+        existing_ids = {r["id"] for r in st.session_state.recipes}
+        for r in incoming:
+            if r.get("id") in existing_ids:
+                r["id"] = _get_new_recipe_id()
+        st.session_state.recipes.extend(incoming)
+        st.success(f"Importate {len(incoming)} ricette.")
+    except Exception as e:
+        st.error(f"Import fallita: {e}")
 
 # -----------------------------
-# UI
+# UI Base
 # -----------------------------
 st.set_page_config(page_title=APP_TITLE, page_icon="🍳", layout="wide")
 _init_state()
@@ -165,8 +203,18 @@ with st.sidebar:
     col_a, col_b = st.columns(2)
     if col_a.button("💾 Salva"):
         save_to_file()
+        st.toast("Dati salvati.")
     if col_b.button("📂 Carica"):
         load_from_file()
+    st.divider()
+    st.caption("Ricettario • Import/Export")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.download_button("⬇️ Export JSON", export_recipes_json(), file_name="recipes.json", use_container_width=True)
+    with c2:
+        up = st.file_uploader("Import JSON", type=["json"], label_visibility="collapsed")
+        if up is not None:
+            import_recipes_json(up.read())
 
 # -----------------------------
 # PIANIFICATORE
@@ -174,13 +222,13 @@ with st.sidebar:
 if page == "Pianificatore settimanale":
     st.header("Pianificatore settimanale")
 
-    nav_cols = st.columns([0.4, 1, 1, 1, 1, 1, 1, 1, 0.4])
+    nav_cols = st.columns([0.5, 1, 1, 1, 1, 1, 1, 1, 0.5])
     with nav_cols[0]:
-        if st.button("◀︎", use_container_width=True):
+        if st.button("◀︎", use_container_width=True, key="nav_prev"):
             st.session_state.week_start -= timedelta(days=7)
             st.session_state.planner = _empty_week(st.session_state.week_start)
     with nav_cols[-1]:
-        if st.button("▶︎", use_container_width=True):
+        if st.button("▶︎", use_container_width=True, key="nav_next"):
             st.session_state.week_start += timedelta(days=7)
             st.session_state.planner = _empty_week(st.session_state.week_start)
 
@@ -193,28 +241,175 @@ if page == "Pianificatore settimanale":
     for i, c in enumerate(day_cols):
         day_date = st.session_state.week_start + timedelta(days=i)
         with c:
-            st.markdown(f"### {DAYS_LABELS[i]}\\n**{day_date.day}**")
+            st.markdown(f"### {DAYS_LABELS[i]}\n**{day_date.day}**")
             for meal in MEALS:
                 slot = st.session_state.planner["days"][i][meal]
-                r_opts = ["-"] + list(_get_recipe_options().keys())
-                selected = st.selectbox(" ", r_opts, key=f"sel_{i}_{meal}", label_visibility="collapsed")
-                if selected != "-":
-                    slot["recipe_id"] = _get_recipe_options()[selected]
+                r_opts_map = _get_recipe_options()
+                r_opts = ["-"] + list(r_opts_map.keys())
+                current_label = "-"
+                if slot.get("recipe_id"):
                     rec = _find_recipe(slot["recipe_id"])
                     if rec:
-                        st.caption(f"⏱ {rec['time']} min · Porzioni:")
+                        current_label = f'{rec["name"]} · {rec.get("time","-")} min'
+                        if current_label not in r_opts:
+                            r_opts.insert(1, current_label)
+                selected = st.selectbox(
+                    meal,
+                    r_opts,
+                    index=r_opts.index(current_label) if current_label in r_opts else 0,
+                    key=f"sel_{i}_{meal}",
+                )
+                if selected != "-":
+                    slot["recipe_id"] = r_opts_map.get(selected, slot.get("recipe_id"))
+                    rec = _find_recipe(slot["recipe_id"])
+                    if rec:
+                        with st.expander("Dettagli", expanded=False):
+                            if rec.get("image"):
+                                st.image(rec["image"], use_container_width=True)
+                            st.caption(f"⏱ {rec['time']} min · Categoria: {rec.get('category','-')}")
+                            st.write(rec.get("description", ""))
+                            st.caption("Ingredienti (per porzioni base):")
+                            ingr = pd.DataFrame(rec.get("ingredients", []))
+                            if not ingr.empty:
+                                st.dataframe(ingr, hide_index=True, use_container_width=True)
                         slot["servings"] = st.number_input(
-                            "Porzioni", min_value=1, max_value=12, value=slot["servings"], key=f"serv_{i}_{meal}"
+                            "Porzioni", min_value=1, max_value=12, value=slot.get("servings", 2), key=f"serv_{i}_{meal}"
                         )
                 else:
                     slot["recipe_id"] = None
 
 # -----------------------------
-# RICETTE
+# RICETTE (CRUD)
 # -----------------------------
 elif page == "Ricette":
     st.header("Ricettario")
-    st.write("Gestisci qui le tue ricette.")
+
+    # Filtri
+    with st.container():
+        f1, f2, f3 = st.columns([2, 1, 1])
+        text_query = f1.text_input("Cerca per nome/descrizione", "")
+        categories = sorted({r.get("category", "").strip() for r in st.session_state.recipes if r.get("category")})
+        cat = f2.selectbox("Categoria", ["Tutte"] + categories)
+        max_time = f3.number_input("Tempo max (min)", min_value=0, value=0)
+
+    # Lista ricette filtrata
+    def _passes_filters(r):
+        if text_query:
+            q = text_query.lower()
+            if q not in r.get("name", "").lower() and q not in r.get("description", "").lower():
+                return False
+        if cat != "Tutte" and r.get("category") != cat:
+            return False
+        if max_time and _safe_int(r.get("time", 0)) > max_time:
+            return False
+        return True
+
+    filtered = [r for r in st.session_state.recipes if _passes_filters(r)]
+    st.caption(f"{len(filtered)} ricette trovate")
+
+    for r in filtered:
+        with st.container(border=True):
+            c1, c2 = st.columns([1, 2])
+            with c1:
+                if r.get("image"):
+                    try:
+                        st.image(r["image"], use_container_width=True)
+                    except Exception:
+                        st.write("Nessuna anteprima")
+            with c2:
+                st.subheader(r["name"])
+                st.caption(f"Categoria: {r.get('category','-')} · ⏱ {r.get('time','-')} min · Porzioni base: {r.get('servings','-')}")
+                if r.get("description"):
+                    st.write(r["description"])
+                with st.expander("Ingredienti"):
+                    ingr = pd.DataFrame(r.get("ingredients", []))
+                    if not ingr.empty:
+                        st.dataframe(ingr, hide_index=True, use_container_width=True)
+                if r.get("instructions"):
+                    with st.expander("Istruzioni"):
+                        st.write(r["instructions"])
+
+                b1, b2 = st.columns(2)
+                if b1.button("✏️ Modifica", key=f"edit_{r['id']}"):
+                    st.session_state.recipe_form_mode = "edit"
+                    st.session_state.editing_recipe_id = r["id"]
+                if b2.button("🗑️ Elimina", key=f"del_{r['id']}"):
+                    st.session_state.recipes = [x for x in st.session_state.recipes if x["id"] != r["id"]]
+                    st.toast(f"Ricetta '{r['name']}' eliminata")
+
+    st.divider()
+    st.subheader("Aggiungi / Modifica ricetta")
+
+    mode = st.session_state.recipe_form_mode
+    editing_recipe = _find_recipe(st.session_state.editing_recipe_id) if mode == "edit" else None
+
+    with st.form("recipe_form", clear_on_submit=(mode == "add")):
+        name = st.text_input("Nome", value=editing_recipe["name"] if editing_recipe else "")
+        category = st.text_input("Categoria", value=editing_recipe.get("category","") if editing_recipe else "")
+        time_min = st.number_input("Tempo (minuti)", min_value=0, value=_safe_int(editing_recipe.get("time", 0)) if editing_recipe else 0)
+        servings = st.number_input("Porzioni base", min_value=1, value=_safe_int(editing_recipe.get("servings", 2)) if editing_recipe else 2)
+        image = st.text_input("URL immagine (opzionale)", value=editing_recipe.get("image","") if editing_recipe else "")
+        description = st.text_area("Descrizione", value=editing_recipe.get("description","") if editing_recipe else "")
+
+        st.markdown("**Ingredienti**")
+        ingr_container = st.container()
+        default_ingredients = editing_recipe.get("ingredients", []) if editing_recipe else []
+        # gestiamo dinamicamente gli ingredienti con un numero controllato
+        ingr_count = st.number_input("Numero ingredienti", min_value=0, max_value=50, value=len(default_ingredients) if default_ingredients else 5)
+        ingredients: List[Dict[str, Any]] = []
+        for idx in range(int(ingr_count)):
+            col1, col2, col3 = st.columns([3, 1, 1])
+            default = default_ingredients[idx] if idx < len(default_ingredients) else {"name": "", "qty": 0, "unit": UNITS[0]}
+            name_i = col1.text_input(f"Ingrediente {idx+1} - nome", value=default.get("name",""), key=f"ing_name_{idx}")
+            qty_i = col2.number_input(f"Quantità {idx+1}", min_value=0.0, value=float(default.get("qty", 0)), key=f"ing_qty_{idx}")
+            unit_i = col3.selectbox(f"Unità {idx+1}", UNITS, index=(UNITS.index(default.get("unit")) if default.get("unit") in UNITS else 0), key=f"ing_unit_{idx}")
+            if name_i:
+                ingredients.append({"name": name_i, "qty": qty_i, "unit": unit_i})
+
+        instructions = st.text_area("Istruzioni", value=editing_recipe.get("instructions","") if editing_recipe else "")
+
+        c_azioni = st.columns(3)
+        with c_azioni[0]:
+            submit = st.form_submit_button("💾 Salva ricetta")
+        with c_azioni[1]:
+            new_btn = st.form_submit_button("➕ Nuova (svuota)")
+        with c_azioni[2]:
+            cancel_btn = st.form_submit_button("❌ Annulla modifica")
+
+        if submit:
+            if not name.strip():
+                st.error("Il nome è obbligatorio.")
+            else:
+                payload = {
+                    "name": name.strip(),
+                    "category": category.strip(),
+                    "time": int(time_min),
+                    "servings": int(servings),
+                    "image": image.strip(),
+                    "description": description.strip(),
+                    "ingredients": ingredients,
+                    "instructions": instructions.strip(),
+                }
+                if mode == "edit" and editing_recipe:
+                    # aggiorna in place
+                    editing_recipe.update(payload)
+                    st.success(f"Ricetta '{name}' aggiornata.")
+                else:
+                    payload["id"] = _get_new_recipe_id()
+                    st.session_state.recipes.append(payload)
+                    st.success(f"Ricetta '{name}' aggiunta.")
+                st.session_state.recipe_form_mode = "add"
+                st.session_state.editing_recipe_id = None
+
+        if new_btn:
+            st.session_state.recipe_form_mode = "add"
+            st.session_state.editing_recipe_id = None
+            st.experimental_rerun()
+
+        if cancel_btn:
+            st.session_state.recipe_form_mode = "add"
+            st.session_state.editing_recipe_id = None
+            st.info("Modifica annullata.")
 
 # -----------------------------
 # LISTA DELLA SPESA
@@ -238,8 +433,8 @@ else:
                 scale = servings_needed / max(1, recipe.get("servings", 1))
                 for ing in recipe.get("ingredients", []):
                     name = ing["name"].strip().title()
-                    unit = ing["unit"].lower()
-                    qty = float(ing["qty"]) * scale
+                    unit = str(ing["unit"]).lower()
+                    qty = _safe_float(ing["qty"]) * scale
                     base_unit, factor = to_base.get(unit, (unit, 1))
                     qty_base = qty * factor
                     key = (name, base_unit)
@@ -252,16 +447,43 @@ else:
                 qty, unit = round(qty_base / 1000, 2), "l"
             else:
                 qty, unit = round(qty_base, 2), base_unit
-            rows.append({"Ingrediente": name, "Quantità": qty, "Unità": unit})
+            rows.append({"Ingrediente": name, "Quantità": qty, "Unità": unit, "Comprato": False})
+        rows.sort(key=lambda x: x["Ingrediente"])
         return pd.DataFrame(rows)
 
-    df = aggregate_shopping_list()
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    # Stato checklist persistente nella sessione per la settimana corrente
+    key_checklist = f"shopping_{st.session_state.week_start.isoformat()}"
+    if key_checklist not in st.session_state:
+        df_tmp = aggregate_shopping_list()
+        st.session_state[key_checklist] = df_tmp.to_dict("records")
 
-    buffer = BytesIO()
-    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-        df.to_excel(writer, index=False, sheet_name="ShoppingList")
-    st.download_button("Scarica lista (Excel)", buffer.getvalue(), "shopping_list.xlsx")
-    st.download_button("Scarica lista (CSV)", df.to_csv(index=False).encode("utf-8"), "shopping_list.csv")
+    # Visualizza e permette di spuntare
+    df_records = st.session_state[key_checklist]
+    st.caption("Spunta gli elementi acquistati:")
+    for idx, row in enumerate(df_records):
+        cols = st.columns([0.06, 0.64, 0.15, 0.15])
+        with cols[0]:
+            bought = st.checkbox("", value=row.get("Comprato", False), key=f"buy_{idx}")
+        with cols[1]:
+            st.write(row["Ingrediente"])
+        with cols[2]:
+            st.write(row["Quantità"])
+        with cols[3]:
+            st.write(row["Unità"])
+        df_records[idx]["Comprato"] = bought
 
-st.caption("Creato con Streamlit · MVP")
+    # Pulsante per ricalcolare (se cambiano i pasti/porzioni)
+    if st.button("🔄 Ricalcola da planner"):
+        st.session_state[key_checklist] = aggregate_shopping_list().to_dict("records")
+        st.toast("Lista aggiornata.")
+
+    # Esportazioni
+    df_export = pd.DataFrame(st.session_state[key_checklist"])
+    if not df_export.empty:
+        buffer = BytesIO()
+        with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+            df_export.to_excel(writer, index=False, sheet_name="ShoppingList")
+        st.download_button("⬇️ Scarica lista (Excel)", buffer.getvalue(), "shopping_list.xlsx", use_container_width=True)
+        st.download_button("⬇️ Scarica lista (CSV)", df_export.to_csv(index=False).encode("utf-8"), "shopping_list.csv", use_container_width=True)
+
+st.caption("Creato con Streamlit · MVP+")

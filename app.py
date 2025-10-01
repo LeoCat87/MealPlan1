@@ -478,7 +478,7 @@ else:
         st.toast("Lista aggiornata.")
 
     # Esportazioni
-    df_export = pd.DataFrame(st.session_state[key_checklist"])
+    df_export = pd.DataFrame(st.session_state[key_checklist])
     if not df_export.empty:
         buffer = BytesIO()
         with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:

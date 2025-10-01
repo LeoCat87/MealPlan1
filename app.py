@@ -227,6 +227,29 @@ def save_to_sheets():
     ws_slots.clear()
     if slots:
         ws_slots.update([list(slots[0].keys())] + [list(x.values()) for x in slots])
+# ---- Export / Import ricette (indipendenti dal backend) ----
+def export_recipes_json() -> bytes:
+    payload = {"recipes": st.session_state.get("recipes", [])}
+    return json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+
+def import_recipes_json(file_bytes: bytes):
+    try:
+        data = json.loads(file_bytes.decode("utf-8"))
+        incoming = data.get("recipes", [])
+        # assegna ID nuovi se mancano o se collidono
+        existing_ids = {r.get("id") for r in st.session_state.get("recipes", []) if r.get("id") is not None}
+        def _get_new_recipe_id():
+            if not st.session_state.get("recipes"):
+                return 1
+            return max([r.get("id", 0) for r in st.session_state.recipes] or [0]) + 1
+
+        for r in incoming:
+            if "id" not in r or r["id"] in existing_ids:
+                r["id"] = _get_new_recipe_id()
+        st.session_state.recipes = (st.session_state.get("recipes", []) or []) + incoming
+        st.success(f"Importate {len(incoming)} ricette.")
+    except Exception as e:
+        st.error(f"Import fallita: {e}")
 
 # -----------------------------
 # UI Base

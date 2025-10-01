@@ -30,7 +30,6 @@ def _init_state():
 
 
 def _empty_week(start: date | None = None):
-    """Crea una settimana vuota a partire dal lunedì indicato."""
     if start is None:
         today = date.today()
         start = today - timedelta(days=today.weekday())
@@ -46,7 +45,6 @@ def _empty_week(start: date | None = None):
 
 
 def _demo_recipes():
-    """Ricette demo per iniziare."""
     return [
         {
             "id": 1,
@@ -54,7 +52,7 @@ def _demo_recipes():
             "category": "Italiana",
             "time": 25,
             "servings": 2,
-            "description": "Pasta con uova, guanciale/pancetta e parmigiano.",
+            "description": "Pasta con uova, pancetta e parmigiano.",
             "image": "https://images.unsplash.com/photo-1523986371872-9d3ba2e2f642?w=1200",
             "ingredients": [
                 {"name": "Spaghetti", "qty": 200, "unit": "g"},
@@ -63,7 +61,7 @@ def _demo_recipes():
                 {"name": "Parmigiano", "qty": 50, "unit": "g"},
                 {"name": "Pepe nero", "qty": 1, "unit": "tsp"},
             ],
-            "instructions": "Cuoci la pasta. Rosola la pancetta. Mescola uova+formaggio, unisci fuori dal fuoco, pepe.",
+            "instructions": "Cuoci la pasta, rosola la pancetta, unisci fuori dal fuoco uova e formaggio.",
         },
         {
             "id": 2,
@@ -80,23 +78,7 @@ def _demo_recipes():
                 {"name": "Salsa di soia", "qty": 3, "unit": "tbsp"},
                 {"name": "Zenzero", "qty": 10, "unit": "g"},
             ],
-            "instructions": "Salta le verdure, aggiungi salsa di soia e zenzero.",
-        },
-        {
-            "id": 3,
-            "name": "Salmone alla griglia con verdure",
-            "category": "Mediterranea",
-            "time": 30,
-            "servings": 2,
-            "description": "Verdure al forno con filetto di salmone alla griglia.",
-            "image": "https://images.unsplash.com/photo-1516683037151-9d97f1d7d33d?w=1200",
-            "ingredients": [
-                {"name": "Filetto di salmone", "qty": 2, "unit": "pcs"},
-                {"name": "Zucchine", "qty": 200, "unit": "g"},
-                {"name": "Pomodorini", "qty": 200, "unit": "g"},
-                {"name": "Olio d'oliva", "qty": 2, "unit": "tbsp"},
-            ],
-            "instructions": "Griglia il salmone, forno per le verdure condite con olio.",
+            "instructions": "Salta le verdure e aggiungi salsa di soia e zenzero.",
         },
     ]
 
@@ -144,7 +126,7 @@ def _normalize_planner_meal_keys(planner, expected_meals):
 
 
 # -----------------------------
-# Persistenza dati (JSON locale)
+# Persistenza dati
 # -----------------------------
 def save_to_file():
     data = {
@@ -183,36 +165,22 @@ with st.sidebar:
     col_a, col_b = st.columns(2)
     if col_a.button("💾 Salva"):
         save_to_file()
-        st.success("Dati salvati su file locale.")
     if col_b.button("📂 Carica"):
         load_from_file()
-    st.caption("Suggerimento: usa Salva/Carica per mantenere i tuoi dati.")
-
-st.markdown(
-    """
-    <style>
-    .meal-col{background:#fff7f0;border-radius:16px;padding:10px;border:1px solid #ffa65433;margin-bottom:6px}
-    .ghost{border:1px dashed #bbb;border-radius:12px;padding:10px;text-align:center;color:#777;margin-bottom:6px}
-    .recipe-img{border-radius:12px;width:100%;height:200px;object-fit:cover}
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
 
 # -----------------------------
-# PIANIFICATORE SETTIMANALE
+# PIANIFICATORE
 # -----------------------------
 if page == "Pianificatore settimanale":
     st.header("Pianificatore settimanale")
 
-    # layout: freccia sinistra | 7 giorni | freccia destra
     nav_cols = st.columns([0.4, 1, 1, 1, 1, 1, 1, 1, 0.4])
     with nav_cols[0]:
-        if st.button("◀︎", use_container_width=True, key="prev_week"):
+        if st.button("◀︎", use_container_width=True):
             st.session_state.week_start -= timedelta(days=7)
             st.session_state.planner = _empty_week(st.session_state.week_start)
     with nav_cols[-1]:
-        if st.button("▶︎", use_container_width=True, key="next_week"):
+        if st.button("▶︎", use_container_width=True):
             st.session_state.week_start += timedelta(days=7)
             st.session_state.planner = _empty_week(st.session_state.week_start)
 
@@ -220,155 +188,33 @@ if page == "Pianificatore settimanale":
         f"Settimana: {st.session_state.week_start.strftime('%d/%m/%Y')} - "
         f"{(st.session_state.week_start + timedelta(days=6)).strftime('%d/%m/%Y')}"
     )
-    if st.button("🧹 Svuota settimana"):
-        st.session_state.planner = _empty_week(st.session_state.week_start)
 
     day_cols = nav_cols[1:-1]
     for i, c in enumerate(day_cols):
         day_date = st.session_state.week_start + timedelta(days=i)
         with c:
-            st.markdown(f"### {DAYS_LABELS[i]}\n**{day_date.day}**")
+            st.markdown(f"### {DAYS_LABELS[i]}\\n**{day_date.day}**")
             for meal in MEALS:
                 slot = st.session_state.planner["days"][i][meal]
-                st.markdown(f"<div class='meal-col'><b>{meal}</b></div>", unsafe_allow_html=True)
                 r_opts = ["-"] + list(_get_recipe_options().keys())
-                if slot["recipe_id"] is None:
-                    sel_index = 0
-                else:
-                    rec_name = _find_recipe(slot["recipe_id"])["name"]
-                    sel_index = r_opts.index(rec_name) if rec_name in r_opts else 0
-                selected = st.selectbox(
-                    " ", r_opts, index=sel_index, key=f"sel_{i}_{meal}", label_visibility="collapsed"
-                )
+                selected = st.selectbox(" ", r_opts, key=f"sel_{i}_{meal}", label_visibility="collapsed")
                 if selected != "-":
                     slot["recipe_id"] = _get_recipe_options()[selected]
-                    rec = _find_recipe(slot["recipe_id"]) or {}
-                    st.caption(f"⏱ {rec.get('time', '-') } min  ·  Porzioni:")
-                    slot["servings"] = st.number_input(
-                        "Porzioni", min_value=1, max_value=12, value=slot["servings"], key=f"serv_{i}_{meal}"
-                    )
-                    if st.button("✖ Rimuovi", key=f"rm_{i}_{meal}"):
-                        slot["recipe_id"], slot["servings"] = None, 2
+                    rec = _find_recipe(slot["recipe_id"])
+                    if rec:
+                        st.caption(f"⏱ {rec['time']} min · Porzioni:")
+                        slot["servings"] = st.number_input(
+                            "Porzioni", min_value=1, max_value=12, value=slot["servings"], key=f"serv_{i}_{meal}"
+                        )
                 else:
                     slot["recipe_id"] = None
-                    st.markdown("<div class='ghost'>+ Aggiungi ricetta</div>", unsafe_allow_html=True)
 
 # -----------------------------
 # RICETTE
 # -----------------------------
 elif page == "Ricette":
     st.header("Ricettario")
-
-    grid = st.columns(3)
-    recipes = st.session_state.recipes
-
-    def card(r, container):
-        with container:
-            if r.get("image"):
-                st.image(r["image"], use_container_width=True)
-            else:
-                st.image("https://via.placeholder.com/400x200.png?text=Nessuna+immagine", use_container_width=True)
-            st.subheader(r["name"])
-            st.caption(f"{r['category']} · {r['time']} min · per {r['servings']} persone")
-            st.write(r.get("description", ""))
-            cols = st.columns(2)
-            if cols[0].button("Modifica", key=f"edit_{r['id']}"):
-                st.session_state["edit_id"] = r["id"]
-            if cols[1].button("Elimina", key=f"del_{r['id']}"):
-                st.session_state.recipes = [x for x in recipes if x["id"] != r["id"]]
-                st.experimental_rerun()
-
-    for idx, r in enumerate(recipes):
-        card(r, grid[idx % 3])
-
-    st.divider()
-    st.subheader("Nuova ricetta")
-
-    with st.form("new_recipe"):
-        name = st.text_input("Nome ricetta *")
-        category = st.text_input("Categoria", value="")
-        time_m = st.number_input("Tempo (minuti)", 0, 240, 30)
-        servings = st.number_input("Porzioni", 1, 20, 2)
-        description = st.text_area("Descrizione", value="")
-        image = st.text_input("URL immagine", value="")
-
-        st.markdown("**Ingredienti**")
-        ing_df = st.data_editor(
-            pd.DataFrame([{"Ingredient": "", "Qty": 0, "Unit": UNITS[0]}]),
-            num_rows="dynamic",
-            use_container_width=True,
-            key="new_ing_table",
-        )
-
-        instructions = st.text_area("Istruzioni")
-        submitted = st.form_submit_button("Aggiungi ricetta")
-
-        if submitted:
-            ings = []
-            for _, row in ing_df.iterrows():
-                if str(row["Ingredient"]).strip():
-                    ings.append({"name": row["Ingredient"], "qty": float(row["Qty"]), "unit": row["Unit"]})
-            if not name or not ings:
-                st.error("Nome e almeno 1 ingrediente sono obbligatori.")
-            else:
-                next_id = max([r["id"] for r in st.session_state.recipes] + [0]) + 1
-                st.session_state.recipes.append({
-                    "id": next_id,
-                    "name": name,
-                    "category": category,
-                    "time": int(time_m),
-                    "servings": int(servings),
-                    "description": description,
-                    "image": image,
-                    "ingredients": ings,
-                    "instructions": instructions,
-                })
-                st.success(f"Aggiunta {name}!")
-                st.experimental_rerun()
-
-    edit_id = st.session_state.get("edit_id")
-    if edit_id is not None:
-        r = _find_recipe(edit_id)
-        st.divider()
-        st.subheader(f"Modifica: {r['name']}")
-        with st.form("edit_form"):
-            name = st.text_input("Nome ricetta *", value=r["name"])
-            category = st.text_input("Categoria", value=r.get("category", ""))
-            time_m = st.number_input("Tempo (minuti)", 0, 240, r.get("time", 30))
-            servings = st.number_input("Porzioni", 1, 20, r.get("servings", 2))
-            description = st.text_area("Descrizione", value=r.get("description", ""))
-            image = st.text_input("URL immagine", value=r.get("image", ""))
-            st.markdown("**Ingredienti**")
-            ing_df = pd.DataFrame(
-                [{"Ingredient": i["name"], "Qty": i["qty"], "Unit": i["unit"]} for i in r.get("ingredients", [])]
-            )
-            ing_df = st.data_editor(
-                ing_df if not ing_df.empty else pd.DataFrame([{"Ingredient": "", "Qty": 0, "Unit": UNITS[0]}]),
-                num_rows="dynamic", use_container_width=True, key="edit_ing_table"
-            )
-            instructions = st.text_area("Istruzioni", value=r.get("instructions", ""))
-            c1, c2 = st.columns(2)
-            if c1.form_submit_button("Salva"):
-                new_ings = []
-                for _, row in ing_df.iterrows():
-                    if str(row["Ingredient"]).strip():
-                        new_ings.append({"name": row["Ingredient"], "qty": float(row["Qty"]), "unit": row["Unit"]})
-                r.update({
-                    "name": name,
-                    "category": category,
-                    "time": int(time_m),
-                    "servings": int(servings),
-                    "description": description,
-                    "image": image,
-                    "ingredients": new_ings,
-                    "instructions": instructions,
-                })
-                st.session_state["edit_id"] = None
-                st.success("Ricetta aggiornata.")
-                st.experimental_rerun()
-            if c2.form_submit_button("Annulla"):
-                st.session_state["edit_id"] = None
-                st.experimental_rerun()
+    st.write("Gestisci qui le tue ricette.")
 
 # -----------------------------
 # LISTA DELLA SPESA
@@ -377,12 +223,10 @@ else:
     st.header("Lista della spesa")
 
     def aggregate_shopping_list():
-        to_base = {
-            "g": ("g", 1), "kg": ("g", 1000),
-            "ml": ("ml", 1), "l": ("ml", 1000),
-            "pcs": ("pcs", 1), "tbsp": ("tbsp", 1), "tsp": ("tsp", 1)
-        }
-        agg_base: dict[tuple[str, str], float] = {}
+        to_base = {"g": ("g", 1), "kg": ("g", 1000),
+                   "ml": ("ml", 1), "l": ("ml", 1000),
+                   "pcs": ("pcs", 1), "tbsp": ("tbsp", 1), "tsp": ("tsp", 1)}
+        agg_base = {}
         for d in st.session_state.planner["days"]:
             for meal in MEALS:
                 slot = d[meal]
@@ -393,3 +237,31 @@ else:
                     continue
                 scale = servings_needed / max(1, recipe.get("servings", 1))
                 for ing in recipe.get("ingredients", []):
+                    name = ing["name"].strip().title()
+                    unit = ing["unit"].lower()
+                    qty = float(ing["qty"]) * scale
+                    base_unit, factor = to_base.get(unit, (unit, 1))
+                    qty_base = qty * factor
+                    key = (name, base_unit)
+                    agg_base[key] = agg_base.get(key, 0) + qty_base
+        rows = []
+        for (name, base_unit), qty_base in agg_base.items():
+            if base_unit == "g" and qty_base >= 1000:
+                qty, unit = round(qty_base / 1000, 2), "kg"
+            elif base_unit == "ml" and qty_base >= 1000:
+                qty, unit = round(qty_base / 1000, 2), "l"
+            else:
+                qty, unit = round(qty_base, 2), base_unit
+            rows.append({"Ingrediente": name, "Quantità": qty, "Unità": unit})
+        return pd.DataFrame(rows)
+
+    df = aggregate_shopping_list()
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+        df.to_excel(writer, index=False, sheet_name="ShoppingList")
+    st.download_button("Scarica lista (Excel)", buffer.getvalue(), "shopping_list.xlsx")
+    st.download_button("Scarica lista (CSV)", df.to_csv(index=False).encode("utf-8"), "shopping_list.csv")
+
+st.caption("Creato con Streamlit · MVP")

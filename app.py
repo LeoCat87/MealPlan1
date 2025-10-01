@@ -149,6 +149,41 @@ def _normalize_planner_meal_keys(planner, expected_meals):
 # -----------------------------
 # Persistenza dati
 # -----------------------------
+import time
+import hashlib
+import json as _json  # per evitare conflitto col json importato
+
+def _planner_fingerprint(planner: dict) -> str:
+    # fingerprint deterministico dei soli campi rilevanti per la spesa
+    canon = []
+    for d in planner.get("days", []):
+        row = {"date": d["date"]}
+        for meal, slot in d.items():
+            if meal == "date":
+                continue
+            row[meal] = {"recipe_id": slot.get("recipe_id"), "servings": slot.get("servings", 2)}
+        canon.append(row)
+    payload = _json.dumps(canon, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+def _save_planner_if_changed(debounce_sec: float = 2.0):
+    # salva su Sheets se il planner è cambiato rispetto all'ultimo salvataggio
+    if "planner" not in st.session_state:
+        return
+    fp = _planner_fingerprint(st.session_state.planner)
+    last_fp = st.session_state.get("_last_saved_planner_fp")
+    last_ts = st.session_state.get("_last_saved_ts", 0.0)
+    now = time.time()
+
+    if fp != last_fp and (now - last_ts) >= debounce_sec:
+        try:
+            save_to_sheets()  # usa la tua funzione già definita
+            st.session_state["_last_saved_planner_fp"] = fp
+            st.session_state["_last_saved_ts"] = now
+            st.toast("Planner salvato ✓")
+        except Exception as e:
+            st.warning(f"Impossibile salvare adesso: {e}")
+
 def _get_sheet_client():
     creds = Credentials.from_service_account_info(
         st.secrets["gcp_service_account"],

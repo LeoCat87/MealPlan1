@@ -555,6 +555,9 @@ elif page == "Ricette":
 # -----------------------------
 # LISTA DELLA SPESA
 # -----------------------------
+# -----------------------------
+# LISTA DELLA SPESA (auto-refresh)
+# -----------------------------
 else:
     st.header("Lista della spesa")
 
@@ -571,15 +574,17 @@ else:
                 recipe = _find_recipe(rid)
                 if not recipe:
                     continue
-                scale = servings_needed / max(1, recipe.get("servings", 1))
+                base_serv = max(1, recipe.get("servings", 1))
+                scale = (servings_needed or 0) / base_serv
                 for ing in recipe.get("ingredients", []):
-                    name = ing["name"].strip().title()
+                    name = str(ing["name"]).strip().title()
                     unit = str(ing["unit"]).lower()
-                    qty = _safe_float(ing["qty"]) * scale
+                    qty = float(ing.get("qty", 0)) * scale
                     base_unit, factor = to_base.get(unit, (unit, 1))
                     qty_base = qty * factor
                     key = (name, base_unit)
                     agg_base[key] = agg_base.get(key, 0) + qty_base
+
         rows = []
         for (name, base_unit), qty_base in agg_base.items():
             if base_unit == "g" and qty_base >= 1000:
@@ -588,43 +593,17 @@ else:
                 qty, unit = round(qty_base / 1000, 2), "l"
             else:
                 qty, unit = round(qty_base, 2), base_unit
-            rows.append({"Ingrediente": name, "Quantità": qty, "Unità": unit, "Comprato": False})
+            rows.append({"Ingrediente": name, "Quantità": qty, "Unità": unit})
         rows.sort(key=lambda x: x["Ingrediente"])
         return pd.DataFrame(rows)
 
-    # Stato checklist persistente nella sessione per la settimana corrente
-    key_checklist = f"shopping_{st.session_state.week_start.isoformat()}"
-    if key_checklist not in st.session_state:
-        df_tmp = aggregate_shopping_list()
-        st.session_state[key_checklist] = df_tmp.to_dict("records")
+    # Calcolo automatico ad ogni run → niente pulsante
+    df = aggregate_shopping_list()
+    st.dataframe(df, use_container_width=True, hide_index=True)
 
-    # Visualizza e permette di spuntare
-    df_records = st.session_state[key_checklist]
-    st.caption("Spunta gli elementi acquistati:")
-    for idx, row in enumerate(df_records):
-        cols = st.columns([0.06, 0.64, 0.15, 0.15])
-        with cols[0]:
-            bought = st.checkbox("", value=row.get("Comprato", False), key=f"buy_{idx}")
-        with cols[1]:
-            st.write(row["Ingrediente"])
-        with cols[2]:
-            st.write(row["Quantità"])
-        with cols[3]:
-            st.write(row["Unità"])
-        df_records[idx]["Comprato"] = bought
-
-    # Pulsante per ricalcolare (se cambiano i pasti/porzioni)
-    if st.button("🔄 Ricalcola da planner"):
-        st.session_state[key_checklist] = aggregate_shopping_list().to_dict("records")
-        st.toast("Lista aggiornata.")
-
-    # Esportazioni
-    df_export = pd.DataFrame(st.session_state[key_checklist])
-    if not df_export.empty:
-        buffer = BytesIO()
-        with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-            df_export.to_excel(writer, index=False, sheet_name="ShoppingList")
-        st.download_button("⬇️ Scarica lista (Excel)", buffer.getvalue(), "shopping_list.xlsx", use_container_width=True)
-        st.download_button("⬇️ Scarica lista (CSV)", df_export.to_csv(index=False).encode("utf-8"), "shopping_list.csv", use_container_width=True)
-
-st.caption("Creato con Streamlit · MVP+")
+    # Export sempre allineato
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+        df.to_excel(writer, index=False, sheet_name="ShoppingList")
+    st.download_button("⬇️ Scarica lista (Excel)", buffer.getvalue(), "shopping_list.xlsx", use_container_width=True)
+    st.download_button("⬇️ Scarica lista (CSV)", df.to_csv(index=False).encode("utf-8"), "shopping_list.csv", use_container_width=True)

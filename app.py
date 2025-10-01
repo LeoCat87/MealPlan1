@@ -316,7 +316,7 @@ with st.sidebar:
 # -----------------------------
 if page == "Pianificatore settimanale":
     st.header("Pianificatore settimanale")
-    
+
     nav_cols = st.columns([0.5, 1, 1, 1, 1, 1, 1, 1, 0.5])
     with nav_cols[0]:
         if st.button("◀︎", use_container_width=True, key="nav_prev"):
@@ -334,73 +334,38 @@ if page == "Pianificatore settimanale":
 
     day_cols = nav_cols[1:-1]
     for i, c in enumerate(day_cols):
-        # dentro il loop dei giorni/pasti
-        day_date = st.session_state.week_start + timedelta(days=i)
-
-        # chiavi robuste (prefisso + indice + pasto + data)
-        sel_key   = f"planner_sel_{i}_{meal}_{day_date.isoformat()}"
-        serv_key  = f"planner_serv_{i}_{meal}_{day_date.isoformat()}"
-
-        selected = st.selectbox(
-            label=meal,
-            options=r_opts,
-            index=r_opts.index(current_label) if current_label in r_opts else 0,
-            key=sel_key,
-        )
-
-        if selected != "-":
-            slot["recipe_id"] = r_opts_map.get(selected, slot.get("recipe_id"))
-            rec = _find_recipe(slot["recipe_id"])
-            if rec:
-                with st.expander("Dettagli", expanded=False):
-                    if rec.get("image"):
-                        st.image(rec["image"], use_container_width=True)
-                    st.caption(f"⏱ {rec['time']} min · Categoria: {rec.get('category','-')}")
-                    st.write(rec.get("description", ""))
-                slot["servings"] = st.number_input(
-                    "Porzioni",
-                    min_value=1,
-                    max_value=12,
-                    value=slot.get("servings", 2),
-                    key=serv_key,  # <-- usa la chiave robusta anche qui
-                )
-        else:
-            slot["recipe_id"] = None
-
-    _save_planner_if_changed()
-
-   
-    day_cols = nav_cols[1:-1]
-    for i, c in enumerate(day_cols):
         day_date = st.session_state.week_start + timedelta(days=i)
         with c:
             st.markdown(f"### {DAYS_LABELS[i]}\n**{day_date.day}**")
-        
-        # 👇 QUI il ciclo sui pasti (Pranzo, Cena)
+
+            # 🔁 ciclo pasti: DA QUI in poi 'meal' esiste
             for meal in MEALS:
                 slot = st.session_state.planner["days"][i][meal]
+
+                # opzioni ricette
                 r_opts_map = _get_recipe_options()
                 r_opts = ["-"] + list(r_opts_map.keys())
-    
+
+                # etichetta corrente (se già selezionato)
                 current_label = "-"
                 if slot.get("recipe_id"):
-                    rec = _find_recipe(slot["recipe_id"])
-                    if rec:
-                        current_label = f'{rec["name"]} · {rec.get("time","-")} min'
+                    rec_cur = _find_recipe(slot["recipe_id"])
+                    if rec_cur:
+                        current_label = f'{rec_cur["name"]} · {rec_cur.get("time","-")} min'
                         if current_label not in r_opts:
                             r_opts.insert(1, current_label)
-    
-                # 👇 le chiavi DEVONO stare qui dentro, perché usano `meal`
+
+                # 🔑 chiavi UNICHE: includono indice, pasto e data
                 sel_key  = f"planner_sel_{i}_{meal}_{day_date.isoformat()}"
                 serv_key = f"planner_serv_{i}_{meal}_{day_date.isoformat()}"
-    
+
                 selected = st.selectbox(
                     label=meal,
                     options=r_opts,
                     index=r_opts.index(current_label) if current_label in r_opts else 0,
                     key=sel_key,
                 )
-    
+
                 if selected != "-":
                     slot["recipe_id"] = r_opts_map.get(selected, slot.get("recipe_id"))
                     rec = _find_recipe(slot["recipe_id"])
@@ -419,6 +384,10 @@ if page == "Pianificatore settimanale":
                         )
                 else:
                     slot["recipe_id"] = None
+
+    # salva subito se ci sono modifiche (debounced)
+    _save_planner_if_changed()
+
 
 # -----------------------------
 # RICETTE (CRUD)

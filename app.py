@@ -375,10 +375,13 @@ if page == "Pianificatore settimanale":
         day_date = st.session_state.week_start + timedelta(days=i)
         with c:
             st.markdown(f"### {DAYS_LABELS[i]}\n**{day_date.day}**")
+        
+        # 👇 QUI il ciclo sui pasti (Pranzo, Cena)
             for meal in MEALS:
                 slot = st.session_state.planner["days"][i][meal]
                 r_opts_map = _get_recipe_options()
                 r_opts = ["-"] + list(r_opts_map.keys())
+    
                 current_label = "-"
                 if slot.get("recipe_id"):
                     rec = _find_recipe(slot["recipe_id"])
@@ -386,12 +389,18 @@ if page == "Pianificatore settimanale":
                         current_label = f'{rec["name"]} · {rec.get("time","-")} min'
                         if current_label not in r_opts:
                             r_opts.insert(1, current_label)
+    
+                # 👇 le chiavi DEVONO stare qui dentro, perché usano `meal`
+                sel_key  = f"planner_sel_{i}_{meal}_{day_date.isoformat()}"
+                serv_key = f"planner_serv_{i}_{meal}_{day_date.isoformat()}"
+    
                 selected = st.selectbox(
-                    meal,
-                    r_opts,
+                    label=meal,
+                    options=r_opts,
                     index=r_opts.index(current_label) if current_label in r_opts else 0,
-                    key=f"sel_{i}_{meal}",
+                    key=sel_key,
                 )
+    
                 if selected != "-":
                     slot["recipe_id"] = r_opts_map.get(selected, slot.get("recipe_id"))
                     rec = _find_recipe(slot["recipe_id"])
@@ -401,12 +410,12 @@ if page == "Pianificatore settimanale":
                                 st.image(rec["image"], use_container_width=True)
                             st.caption(f"⏱ {rec['time']} min · Categoria: {rec.get('category','-')}")
                             st.write(rec.get("description", ""))
-                            st.caption("Ingredienti (per porzioni base):")
-                            ingr = pd.DataFrame(rec.get("ingredients", []))
-                            if not ingr.empty:
-                                st.dataframe(ingr, hide_index=True, use_container_width=True)
                         slot["servings"] = st.number_input(
-                            "Porzioni", min_value=1, max_value=12, value=slot.get("servings", 2), key=f"serv_{i}_{meal}"
+                            "Porzioni",
+                            min_value=1,
+                            max_value=12,
+                            value=slot.get("servings", 2),
+                            key=serv_key,
                         )
                 else:
                     slot["recipe_id"] = None

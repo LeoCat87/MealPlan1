@@ -349,21 +349,21 @@ if page == "Pianificatore settimanale":
         )
 
         if selected != "-":
-        slot["recipe_id"] = r_opts_map.get(selected, slot.get("recipe_id"))
-        rec = _find_recipe(slot["recipe_id"])
-        if rec:
-            with st.expander("Dettagli", expanded=False):
-                if rec.get("image"):
-                    st.image(rec["image"], use_container_width=True)
-                st.caption(f"⏱ {rec['time']} min · Categoria: {rec.get('category','-')}")
-                st.write(rec.get("description", ""))
-            slot["servings"] = st.number_input(
-                "Porzioni",
-                min_value=1,
-                max_value=12,
-                value=slot.get("servings", 2),
-                key=serv_key,  # <-- usa la chiave robusta anche qui
-            )
+            slot["recipe_id"] = r_opts_map.get(selected, slot.get("recipe_id"))
+            rec = _find_recipe(slot["recipe_id"])
+            if rec:
+                with st.expander("Dettagli", expanded=False):
+                    if rec.get("image"):
+                        st.image(rec["image"], use_container_width=True)
+                    st.caption(f"⏱ {rec['time']} min · Categoria: {rec.get('category','-')}")
+                    st.write(rec.get("description", ""))
+                slot["servings"] = st.number_input(
+                    "Porzioni",
+                    min_value=1,
+                    max_value=12,
+                    value=slot.get("servings", 2),
+                    key=serv_key,  # <-- usa la chiave robusta anche qui
+                )
         else:
             slot["recipe_id"] = None
 

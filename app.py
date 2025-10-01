@@ -4,6 +4,8 @@ from io import BytesIO
 from datetime import date, timedelta
 import json
 from typing import List, Dict, Any
+import gspread
+from google.oauth2.service_account import Credentials
 
 # -----------------------------
 # Config / Costanti
@@ -147,48 +149,84 @@ def _normalize_planner_meal_keys(planner, expected_meals):
 # -----------------------------
 # Persistenza dati
 # -----------------------------
-def save_to_file():
-    data = {
-        "recipes": st.session_state.recipes,
-        "planner": st.session_state.planner,
-        "week_start": str(st.session_state.week_start)
-    }
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+def _get_sheet_client():
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=["https://www.googleapis.com/auth/spreadsheets"]
+    )
+    return gspread.authorize(creds)
 
-def load_from_file():
-    try:
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if data.get("recipes"):
-            st.session_state.recipes = data.get("recipes", st.session_state.recipes)
-        st.session_state.planner = data.get("planner", st.session_state.planner)
-        if "week_start" in data:
-            st.session_state.week_start = date.fromisoformat(data["week_start"])
-        st.session_state.planner = _normalize_planner_meal_keys(st.session_state.planner, MEALS)
-        st.success("Dati caricati dal file locale.")
-    except FileNotFoundError:
-        st.warning("Nessun file locale trovato: verranno usati i dati demo.")
-    except Exception as e:
-        st.error(f"Errore nel caricamento: {e}")
+SPREADSHEET_NAME = "MealPlannerDB"  # <-- il nome del tuo Google Sheet
 
-def export_recipes_json() -> bytes:
-    payload = {"recipes": st.session_state.recipes}
-    return json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+def load_from_sheets():
+    gc = _get_sheet_client()
+    sh = gc.open(SPREADSHEET_NAME)
 
-def import_recipes_json(file_bytes: bytes):
-    try:
-        payload = json.loads(file_bytes.decode("utf-8"))
-        incoming: List[Dict[str, Any]] = payload.get("recipes", [])
-        # Mantiene gli ID esistenti, assegna ID nuovi se collisione
-        existing_ids = {r["id"] for r in st.session_state.recipes}
-        for r in incoming:
-            if r.get("id") in existing_ids:
-                r["id"] = _get_new_recipe_id()
-        st.session_state.recipes.extend(incoming)
-        st.success(f"Importate {len(incoming)} ricette.")
-    except Exception as e:
-        st.error(f"Import fallita: {e}")
+    # carica ricette
+    ws_recipes = sh.worksheet("recipes")
+    rows = ws_recipes.get_all_records()
+    st.session_state.recipes = []
+    for r in rows:
+        r["ingredients"] = json.loads(r.get("ingredients_json", "[]"))
+        st.session_state.recipes.append(r)
+
+    # carica planner
+    ws_slots = sh.worksheet("planner_slots")
+    slots = ws_slots.get_all_records()
+    planner = {"start": None, "days": []}
+    for s in slots:
+        date_str = s["date"]
+        meal = s["meal"]
+        rid = int(s["recipe_id"]) if s["recipe_id"] else None
+        servings = int(s["servings"])
+        planner.setdefault("days", []).append({
+            "date": date_str,
+            meal: {"recipe_id": rid, "servings": servings}
+        })
+    st.session_state.planner = planner
+    st.success("✅ Dati caricati da Google Sheets")
+
+def save_to_sheets():
+    gc = _get_sheet_client()
+    sh = gc.open(SPREADSHEET_NAME)
+
+    # salva ricette
+    ws_recipes = sh.worksheet("recipes")
+    rows = []
+    for r in st.session_state.recipes:
+        rows.append({
+            "id": r["id"],
+            "name": r["name"],
+            "category": r.get("category", ""),
+            "time": r.get("time", 0),
+            "servings": r.get("servings", 2),
+            "image": r.get("image", ""),
+            "description": r.get("description", ""),
+            "instructions": r.get("instructions", ""),
+            "ingredients_json": json.dumps(r.get("ingredients", []), ensure_ascii=False)
+        })
+    ws_recipes.clear()
+    if rows:
+        ws_recipes.update([list(rows[0].keys())] + [list(x.values()) for x in rows])
+
+    # salva planner
+    ws_slots = sh.worksheet("planner_slots")
+    slots = []
+    for d in st.session_state.planner["days"]:
+        date_str = d["date"]
+        for meal, slot in d.items():
+            if meal == "date": 
+                continue
+            slots.append({
+                "week_start": st.session_state.week_start.isoformat(),
+                "date": date_str,
+                "meal": meal,
+                "recipe_id": slot.get("recipe_id"),
+                "servings": slot.get("servings", 2)
+            })
+    ws_slots.clear()
+    if slots:
+        ws_slots.update([list(slots[0].keys())] + [list(x.values()) for x in slots])
 
 # -----------------------------
 # UI Base
@@ -202,10 +240,9 @@ with st.sidebar:
     st.divider()
     col_a, col_b = st.columns(2)
     if col_a.button("💾 Salva"):
-        save_to_file()
-        st.toast("Dati salvati.")
+        save_to_sheets()
     if col_b.button("📂 Carica"):
-        load_from_file()
+        load_from_sheets()
     st.divider()
     st.caption("Ricettario • Import/Export")
     c1, c2 = st.columns(2)

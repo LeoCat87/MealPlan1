@@ -330,7 +330,11 @@ def _aggregate_shopping_list_from_planner() -> pd.DataFrame:
             qty, unit = round(qty_base, 2), base_unit
         rows.append({"Ingrediente": name, "Quantità": qty, "Unità": unit})
     rows.sort(key=lambda x: (x["Ingrediente"], x["Unità"]))
+    # ✅ garantisci le colonne anche se non ci sono righe
+    if not rows:
+        return pd.DataFrame(columns=["Ingrediente", "Quantità", "Unità"])
     return pd.DataFrame(rows)
+
 
 def _ensure_week_checklist():
     """Inizializza o riallinea la checklist della settimana corrente mantenendo i flag 'Comprato' quando possibile."""
@@ -340,8 +344,13 @@ def _ensure_week_checklist():
     if "shopping_checklists" not in st.session_state:
         st.session_state.shopping_checklists = {}
 
+    # ✅ se la lista è vuota: inizializza/azzera in modo sicuro e termina
+    if df_new.empty:
+        st.session_state.shopping_checklists[wk] = []
+        return
+
     current = st.session_state.shopping_checklists.get(wk)
-    if current is None:
+    if current is None or len(current) == 0:
         # prima volta: crea con Comprato=False
         df_new["Comprato"] = False
         st.session_state.shopping_checklists[wk] = df_new.to_dict("records")

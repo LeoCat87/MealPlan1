@@ -531,8 +531,7 @@ with st.sidebar:
             import_recipes_json(up.read())
     st.divider()
     if st.button("🔍 Diagnostica Secrets"):
-    _secrets_healthcheck()
-
+        _secrets_healthcheck()
 
 # -----------------------------
 # PIANIFICATORE

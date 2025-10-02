@@ -575,6 +575,7 @@ details {
   border-radius: 12px; 
   padding: .5rem .75rem 1rem;
 }
+""", unsafe_allow_html=True)
 div.streamlit-expanderHeader {
 
 _init_state()

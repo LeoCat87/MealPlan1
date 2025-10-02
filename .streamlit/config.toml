@@ -1,0 +1,6 @@
+[theme]
+primaryColor = "#22c55e"               # accenti, bottoni primari
+backgroundColor = "#0b1220"            # sfondo app
+secondaryBackgroundColor = "#111827"   # pannelli/box
+textColor = "#e5e7eb"                  # testo
+font = "sans serif"                    # "sans serif" | "serif" | "monospace"

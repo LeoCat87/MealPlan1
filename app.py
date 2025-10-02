@@ -7,15 +7,37 @@ from typing import List, Dict, Any
 import gspread
 from google.oauth2.service_account import Credentials
 
+def _normalize_private_key(pk: str) -> str:
+    # 1) se ci sono backslash-n letterali, convertili in veri a-capo
+    if "\\n" in pk:
+        pk = pk.replace("\\n", "\n")
+    # 2) rimuovi spazi laterali e CR (\r) parassiti
+    pk = pk.strip().replace("\r", "")
+    # 3) assicurati che righe BEGIN/END siano isolate e senza spazi
+    lines = [ln.strip() for ln in pk.split("\n") if ln.strip() != ""]
+    # Se non sono già su righe dedicate, ricostruisci il PEM
+    if "BEGIN PRIVATE KEY-----" not in lines[0]:
+        # prova a trovare header/footer
+        try:
+            start = next(i for i,l in enumerate(lines) if "BEGIN PRIVATE KEY" in l)
+            end   = next(i for i,l in enumerate(lines) if "END PRIVATE KEY"   in l)
+            body  = [l for l in lines[start+1:end] if "PRIVATE KEY" not in l]
+            pk = "-----BEGIN PRIVATE KEY-----\n" + "\n".join(body) + "\n-----END PRIVATE KEY-----"
+        except StopIteration:
+            # fallback: lascia così com’è
+            pass
+    else:
+        pk = "\n".join(lines)
+    return pk
+
 def _get_sheet_client():
     info = dict(st.secrets["gcp_service_account"])  # copia mutabile
-    # Se la chiave contiene '\n' letterali, converti in veri a-capo
     pk = info.get("private_key", "")
-    if "\\n" in pk:
-        info["private_key"] = pk.replace("\\n", "\n")
-    # (opzionale) mini-sanity check header/footer
-    if "BEGIN PRIVATE KEY" not in info["private_key"] or "END PRIVATE KEY" not in info["private_key"]:
-        st.warning("Formato private_key sospetto: controlla i ritorni a capo nei Secrets.")
+    info["private_key"] = _normalize_private_key(pk)
+    # mini sanity check
+    if not (info["private_key"].startswith("-----BEGIN PRIVATE KEY-----") and
+            info["private_key"].endswith("-----END PRIVATE KEY-----")):
+        st.error("private_key nei Secrets non è nel formato PEM atteso.")
     creds = Credentials.from_service_account_info(
         info,
         scopes=["https://www.googleapis.com/auth/spreadsheets"]

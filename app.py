@@ -7,6 +7,21 @@ from typing import List, Dict, Any
 import gspread
 from google.oauth2.service_account import Credentials
 
+def _get_sheet_client():
+    info = dict(st.secrets["gcp_service_account"])  # copia mutabile
+    # Se la chiave contiene '\n' letterali, converti in veri a-capo
+    pk = info.get("private_key", "")
+    if "\\n" in pk:
+        info["private_key"] = pk.replace("\\n", "\n")
+    # (opzionale) mini-sanity check header/footer
+    if "BEGIN PRIVATE KEY" not in info["private_key"] or "END PRIVATE KEY" not in info["private_key"]:
+        st.warning("Formato private_key sospetto: controlla i ritorni a capo nei Secrets.")
+    creds = Credentials.from_service_account_info(
+        info,
+        scopes=["https://www.googleapis.com/auth/spreadsheets"]
+    )
+    return gspread.authorize(creds)
+    
 # -----------------------------
 # Config / Costanti
 # -----------------------------

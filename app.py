@@ -6,6 +6,78 @@ import json
 from typing import List, Dict, Any
 import gspread
 from google.oauth2.service_account import Credentials
+import re
+import textwrap
+
+def _normalize_private_key(pk: str) -> str:
+    if pk is None:
+        return ""
+    # 1) \n letterali -> newline reali
+    if "\\n" in pk:
+        pk = pk.replace("\\n", "\n")
+    # 2) rimuovi CR e spazi laterali
+    pk = pk.strip().replace("\r", "")
+    # 3) togli spazi di indentazione accidentali
+    pk = "\n".join([ln.strip() for ln in pk.split("\n")])
+    return pk
+
+def _secrets_healthcheck():
+    try:
+        info = st.secrets["gcp_service_account"]
+    except Exception as e:
+        st.error(f"❌ Nessuna sezione [gcp_service_account] nei Secrets: {e}")
+        return
+
+    required = ["type","project_id","private_key_id","private_key","client_email","client_id","token_uri"]
+    missing = [k for k in required if k not in info]
+    if missing:
+        st.error(f"❌ Mancano questi campi nei Secrets: {', '.join(missing)}")
+        return
+
+    pk_raw = str(info.get("private_key", ""))
+    pk = _normalize_private_key(pk_raw)
+
+    st.markdown("### Verifica `private_key`")
+    st.write(f"- Lunghezza normalizzata: **{len(pk)}** caratteri")
+    st.write(f"- Inizia con BEGIN: **{'YES' if pk.startswith('-----BEGIN PRIVATE KEY-----') else 'NO'}**")
+    st.write(f"- Finisce con END: **{'YES' if pk.endswith('-----END PRIVATE KEY-----') else 'NO'}**")
+
+    # Controllo righe interne (PEM tipicamente ~64 char per riga, ma non è obbligatorio)
+    lines = pk.split("\n")
+    if lines and lines[0] != "-----BEGIN PRIVATE KEY-----":
+        st.warning("⚠️ La prima riga non è esattamente '-----BEGIN PRIVATE KEY-----'")
+    if lines and lines[-1] != "-----END PRIVATE KEY-----":
+        st.warning("⚠️ L’ultima riga non è esattamente '-----END PRIVATE KEY-----'")
+
+    # Sanity check semplice sul body (no BEGIN/END)
+    if len(lines) >= 3:
+        body = "".join(lines[1:-1])
+        # base64 semplice: solo A–Z a–z 0–9 + / and +, eventualmente '=' padding
+        if not re.fullmatch(r"[A-Za-z0-9+/=]+", body):
+            st.warning("⚠️ Il corpo della chiave contiene caratteri non base64 (forse spazi o caratteri tipografici).")
+
+        # padding plausibile
+        if len(body) % 4 != 0:
+            st.warning("⚠️ Lunghezza del body non multipla di 4 → tipico errore di padding.")
+        else:
+            st.success("✅ Lunghezza del body sembra corretta (multipla di 4).")
+
+    # Test credenziali reali (senza stampare la chiave)
+    try:
+        info_fixed = dict(info)
+        info_fixed["private_key"] = pk
+        from google.oauth2.service_account import Credentials
+        import gspread
+        creds = Credentials.from_service_account_info(
+            info_fixed,
+            scopes=["https://www.googleapis.com/auth/spreadsheets"]
+        )
+        client = gspread.authorize(creds)
+        st.success("✅ Credenziali valide: autenticazione riuscita.")
+    except Exception as e:
+        st.error(f"❌ Autenticazione fallita: {e}")
+        st.info("Suggerimento: usa TOML con triple virgolette e a-capo REALI, oppure lascia \\n e usa la normalizzazione nel codice.")
+
 
 def _normalize_private_key(pk: str) -> str:
     # 1) se ci sono backslash-n letterali, convertili in veri a-capo
@@ -457,6 +529,10 @@ with st.sidebar:
         up = st.file_uploader("Import JSON", type=["json"], label_visibility="collapsed")
         if up is not None:
             import_recipes_json(up.read())
+    st.divider()
+    if st.button("🔍 Diagnostica Secrets"):
+    _secrets_healthcheck()
+
 
 # -----------------------------
 # PIANIFICATORE

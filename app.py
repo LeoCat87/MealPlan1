@@ -391,7 +391,11 @@ _init_state()
 
 with st.sidebar:
     st.title(APP_TITLE)
-    page = st.radio("Sezioni", ["Pianificatore settimanale", "Ricette", "Lista della spesa"], index=0)
+    pages = ["Pianificatore settimanale", "Ricette"]
+    # fallback se avevi salvato una pagina non più esistente
+    if "page" in st.session_state and st.session_state.page not in pages:
+        st.session_state.page = "Pianificatore settimanale"
+    page = st.radio("Sezioni", pages, index=0, key="page")
     st.divider()
     col_a, col_b = st.columns(2)
     if col_a.button("💾 Salva"):
@@ -622,28 +626,3 @@ elif page == "Ricette":
             st.session_state.recipe_form_mode = "add"
             st.session_state.editing_recipe_id = None
             st.info("Modifica annullata.")
-
-# -----------------------------
-# LISTA DELLA SPESA (per settimana)
-# -----------------------------
-elif page == "Lista della spesa":
-    st.header("Lista della spesa")
-
-    # navigazione settimana (riusa la stessa dei planner)
-    nav_cols = st.columns([0.5, 1, 1, 1, 1, 1, 1, 1, 0.5])
-    with nav_cols[0]:
-        if st.button("◀︎", use_container_width=True, key="groceries_prev"):
-            st.session_state.week_start -= timedelta(days=7)
-            st.session_state.planner = _empty_week(st.session_state.week_start)
-    with nav_cols[-1]:
-        if st.button("▶︎", use_container_width=True, key="groceries_next"):
-            st.session_state.week_start += timedelta(days=7)
-            st.session_state.planner = _empty_week(st.session_state.week_start)
-
-    st.caption(
-        f"Settimana: {st.session_state.week_start.strftime('%d/%m/%Y')} - "
-        f"{(st.session_state.week_start + timedelta(days=6)).strftime('%d/%m/%Y')}"
-    )
-
-    # la lista della spesa si basa **sempre** sulla settimana corrente
-    _render_shopping_list_ui(embed=True)

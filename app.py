@@ -285,6 +285,103 @@ def import_recipes_json(file_bytes: bytes):
         st.success(f"Importate {len(incoming)} ricette.")
     except Exception as e:
         st.error(f"Import fallita: {e}")
+# ---------- Shopping list helpers (per-settimana) ----------
+
+def _week_key():
+    # chiave univoca della settimana corrente
+    return st.session_state.week_start.isoformat()
+
+def _aggregate_shopping_list_from_planner() -> pd.DataFrame:
+    """Calcola la lista della spesa a partire dal planner della settimana corrente."""
+    to_base = {
+        "g": ("g", 1), "kg": ("g", 1000),
+        "ml": ("ml", 1), "l": ("ml", 1000),
+        "pcs": ("pcs", 1), "tbsp": ("tbsp", 1), "tsp": ("tsp", 1)
+    }
+    agg_base = {}
+    for d in st.session_state.planner["days"]:
+        for meal in MEALS:
+            slot = d[meal]
+            rid = slot.get("recipe_id")
+            servings_needed = slot.get("servings", 0)
+            recipe = _find_recipe(rid)
+            if not recipe:
+                continue
+            base_serv = max(1, recipe.get("servings", 1))
+            scale = (servings_needed or 0) / base_serv
+            for ing in recipe.get("ingredients", []):
+                name = str(ing.get("name", "")).strip().title()
+                if not name:
+                    continue
+                unit = str(ing.get("unit", "")).lower()
+                qty = float(ing.get("qty", 0)) * scale
+                base_unit, factor = to_base.get(unit, (unit, 1))
+                qty_base = qty * factor
+                key = (name, base_unit)
+                agg_base[key] = agg_base.get(key, 0) + qty_base
+
+    rows = []
+    for (name, base_unit), qty_base in agg_base.items():
+        if base_unit == "g" and qty_base >= 1000:
+            qty, unit = round(qty_base / 1000, 2), "kg"
+        elif base_unit == "ml" and qty_base >= 1000:
+            qty, unit = round(qty_base / 1000, 2), "l"
+        else:
+            qty, unit = round(qty_base, 2), base_unit
+        rows.append({"Ingrediente": name, "Quantità": qty, "Unità": unit})
+    rows.sort(key=lambda x: (x["Ingrediente"], x["Unità"]))
+    return pd.DataFrame(rows)
+
+def _ensure_week_checklist():
+    """Inizializza o riallinea la checklist della settimana corrente mantenendo i flag 'Comprato' quando possibile."""
+    wk = _week_key()
+    df_new = _aggregate_shopping_list_from_planner()
+
+    if "shopping_checklists" not in st.session_state:
+        st.session_state.shopping_checklists = {}
+
+    current = st.session_state.shopping_checklists.get(wk)
+    if current is None:
+        # prima volta: crea con Comprato=False
+        df_new["Comprato"] = False
+        st.session_state.shopping_checklists[wk] = df_new.to_dict("records")
+        return
+
+    # merge “intelligente” per preservare Comprato
+    prev = { (r["Ingrediente"], r["Unità"]) : r.get("Comprato", False) for r in current }
+    df_new["Comprato"] = df_new.apply(lambda r: prev.get((r["Ingrediente"], r["Unità"]), False), axis=1)
+    st.session_state.shopping_checklists[wk] = df_new.to_dict("records")
+
+def _render_shopping_list_ui(embed: bool = True):
+    """Mostra la UI della lista (checkbox + export) per la settimana corrente."""
+    _ensure_week_checklist()
+    wk = _week_key()
+    recs = st.session_state.shopping_checklists[wk]
+
+    if embed:
+        st.subheader("🧾 Lista della spesa — settimana corrente")
+        st.caption(f"{st.session_state.week_start.strftime('%d/%m/%Y')} → {(st.session_state.week_start + timedelta(days=6)).strftime('%d/%m/%Y')}")
+
+    # elenco con checkbox
+    for idx, row in enumerate(recs):
+        cols = st.columns([0.08, 0.62, 0.15, 0.15])
+        with cols[0]:
+            bought = st.checkbox("", value=row.get("Comprato", False), key=f"buy_{wk}_{idx}")
+        with cols[1]:
+            st.write(row["Ingrediente"])
+        with cols[2]:
+            st.write(row["Quantità"])
+        with cols[3]:
+            st.write(row["Unità"])
+        recs[idx]["Comprato"] = bought
+
+    # esportazioni sempre allineate
+    df_export = pd.DataFrame(recs)
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+        df_export.to_excel(writer, index=False, sheet_name="ShoppingList")
+    st.download_button("⬇️ Scarica (Excel)", buffer.getvalue(), "shopping_list.xlsx", use_container_width=True)
+    st.download_button("⬇️ Scarica (CSV)", df_export.to_csv(index=False).encode("utf-8"), "shopping_list.csv", use_container_width=True)
 
 # -----------------------------
 # UI Base
@@ -387,6 +484,10 @@ if page == "Pianificatore settimanale":
 
     # salva subito se ci sono modifiche (debounced)
     _save_planner_if_changed()
+
+    # 👇 Lista della spesa della settimana, integrata nel planner
+    with st.expander("Lista della spesa (settimana corrente)", expanded=True):
+        _render_shopping_list_ui(embed=False)
 
 
 # -----------------------------
@@ -523,57 +624,26 @@ elif page == "Ricette":
             st.info("Modifica annullata.")
 
 # -----------------------------
-# LISTA DELLA SPESA
+# LISTA DELLA SPESA (per settimana)
 # -----------------------------
-# -----------------------------
-# LISTA DELLA SPESA (auto-refresh)
-# -----------------------------
-else:
+elif page == "Lista della spesa":
     st.header("Lista della spesa")
 
-    def aggregate_shopping_list():
-        to_base = {"g": ("g", 1), "kg": ("g", 1000),
-                   "ml": ("ml", 1), "l": ("ml", 1000),
-                   "pcs": ("pcs", 1), "tbsp": ("tbsp", 1), "tsp": ("tsp", 1)}
-        agg_base = {}
-        for d in st.session_state.planner["days"]:
-            for meal in MEALS:
-                slot = d[meal]
-                rid = slot["recipe_id"]
-                servings_needed = slot["servings"]
-                recipe = _find_recipe(rid)
-                if not recipe:
-                    continue
-                base_serv = max(1, recipe.get("servings", 1))
-                scale = (servings_needed or 0) / base_serv
-                for ing in recipe.get("ingredients", []):
-                    name = str(ing["name"]).strip().title()
-                    unit = str(ing["unit"]).lower()
-                    qty = float(ing.get("qty", 0)) * scale
-                    base_unit, factor = to_base.get(unit, (unit, 1))
-                    qty_base = qty * factor
-                    key = (name, base_unit)
-                    agg_base[key] = agg_base.get(key, 0) + qty_base
+    # navigazione settimana (riusa la stessa dei planner)
+    nav_cols = st.columns([0.5, 1, 1, 1, 1, 1, 1, 1, 0.5])
+    with nav_cols[0]:
+        if st.button("◀︎", use_container_width=True, key="groceries_prev"):
+            st.session_state.week_start -= timedelta(days=7)
+            st.session_state.planner = _empty_week(st.session_state.week_start)
+    with nav_cols[-1]:
+        if st.button("▶︎", use_container_width=True, key="groceries_next"):
+            st.session_state.week_start += timedelta(days=7)
+            st.session_state.planner = _empty_week(st.session_state.week_start)
 
-        rows = []
-        for (name, base_unit), qty_base in agg_base.items():
-            if base_unit == "g" and qty_base >= 1000:
-                qty, unit = round(qty_base / 1000, 2), "kg"
-            elif base_unit == "ml" and qty_base >= 1000:
-                qty, unit = round(qty_base / 1000, 2), "l"
-            else:
-                qty, unit = round(qty_base, 2), base_unit
-            rows.append({"Ingrediente": name, "Quantità": qty, "Unità": unit})
-        rows.sort(key=lambda x: x["Ingrediente"])
-        return pd.DataFrame(rows)
+    st.caption(
+        f"Settimana: {st.session_state.week_start.strftime('%d/%m/%Y')} - "
+        f"{(st.session_state.week_start + timedelta(days=6)).strftime('%d/%m/%Y')}"
+    )
 
-    # Calcolo automatico ad ogni run → niente pulsante
-    df = aggregate_shopping_list()
-    st.dataframe(df, use_container_width=True, hide_index=True)
-
-    # Export sempre allineato
-    buffer = BytesIO()
-    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-        df.to_excel(writer, index=False, sheet_name="ShoppingList")
-    st.download_button("⬇️ Scarica lista (Excel)", buffer.getvalue(), "shopping_list.xlsx", use_container_width=True)
-    st.download_button("⬇️ Scarica lista (CSV)", df.to_csv(index=False).encode("utf-8"), "shopping_list.csv", use_container_width=True)
+    # la lista della spesa si basa **sempre** sulla settimana corrente
+    _render_shopping_list_ui(embed=True)

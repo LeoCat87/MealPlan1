@@ -505,6 +505,7 @@ def _render_shopping_list_ui(embed: bool = True):
 # UI Base
 # -----------------------------
 st.set_page_config(page_title=APP_TITLE, page_icon="🍳", layout="wide")
+
 st.markdown("""
 <style>
 /* ---------- layout & contenitori ---------- */
@@ -575,8 +576,9 @@ details {
   border-radius: 12px; 
   padding: .5rem .75rem 1rem;
 }
+div.streamlit-expanderHeader { font-weight: 600; }
+</style>
 """, unsafe_allow_html=True)
-div.streamlit-expanderHeader {
 
 _init_state()
 

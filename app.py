@@ -505,6 +505,78 @@ def _render_shopping_list_ui(embed: bool = True):
 # UI Base
 # -----------------------------
 st.set_page_config(page_title=APP_TITLE, page_icon="🍳", layout="wide")
+st.markdown("""
+<style>
+/* ---------- layout & contenitori ---------- */
+.block-container { padding-top: 1.2rem; padding-bottom: 2rem; }
+section[data-testid="stSidebar"] { width: 320px; border-right: 1px solid rgba(255,255,255,0.06); }
+[data-testid="stHeader"] { background: transparent; }
+
+/* ---------- tipografia ---------- */
+h1, h2, h3 { letter-spacing: .2px; }
+h3 { margin-bottom: .25rem; }
+
+/* ---------- bottoni ---------- */
+div.stButton > button {
+  border-radius: 12px;
+  padding: .5rem 1rem;
+  font-weight: 600;
+  border: 1px solid rgba(255,255,255,0.12);
+  transition: transform .05s ease, filter .2s ease, border-color .2s ease;
+}
+div.stButton > button:hover { filter: brightness(1.05); }
+div.stButton > button:active { transform: translateY(1px) scale(.997); }
+
+/* bottoni "primari" (Streamlit li colora con primaryColor) */
+div.stButton > button[kind="primary"] {
+  border-color: rgba(255,255,255,0.18);
+  box-shadow: 0 6px 16px rgba(34,197,94,.25);
+}
+
+/* link button & download button */
+a[kind="link"] {
+  border-radius: 12px !important;
+  padding: .5rem 1rem !important;
+  font-weight: 600 !important;
+  border: 1px solid rgba(255,255,255,0.12);
+}
+div.stDownloadButton > button {
+  border-radius: 12px;
+  padding: .5rem 1rem;
+  font-weight: 600;
+  border: 1px solid rgba(255,255,255,0.12);
+}
+
+/* ---------- selectbox / textinput / numberinput ---------- */
+div[data-baseweb="select"] > div {
+  border-radius: 10px !important;
+  min-height: 40px;
+}
+div[data-baseweb="select"]:hover { box-shadow: 0 0 0 1px rgba(255,255,255,0.18) inset; }
+input[type="text"], input[type="number"], textarea, .st-af { 
+  border-radius: 10px !important;
+}
+
+/* ---------- radio & checkbox ---------- */
+div[role="radiogroup"] > label { 
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 10px; 
+  padding: .4rem .65rem; 
+  margin-right: .5rem;
+}
+div[role="radiogroup"] > label[data-checked="true"] {
+  border-color: rgba(34,197,94,.6);
+  background: rgba(34,197,94,.08);
+}
+
+/* ---------- expander ---------- */
+details {
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px; 
+  padding: .5rem .75rem 1rem;
+}
+div.streamlit-expanderHeader {
+
 _init_state()
 
 with st.sidebar:

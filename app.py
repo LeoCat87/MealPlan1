@@ -51,8 +51,8 @@ def _resolve_image_url(u: str) -> str:
 
     return u
 
-def _fetch_image_bytes(u: str) -> BytesIO | None:
-    """Scarica l'immagine con UA realistico per evitare blocchi hotlinking/CORS."""
+def _fetch_image_bytes(u: str) -> bytes | None:
+    """Scarica l'immagine e restituisce bytes (non BytesIO), per compatibilità con st.image."""
     try:
         url = _resolve_image_url(u)
         if not url or not url.startswith("http"):
@@ -63,9 +63,14 @@ def _fetch_image_bytes(u: str) -> BytesIO | None:
         }
         r = requests.get(url, headers=headers, timeout=8)
         r.raise_for_status()
-        return BytesIO(r.content)
+        data = r.content
+        # piccolo sanity check (qualche CDN risponde HTML)
+        if not data or len(data) < 32:
+            return None
+        return data  # <--- bytes, non BytesIO
     except Exception:
         return None
+
 
 # -----------------------------
 # Secrets / Service Account utilities

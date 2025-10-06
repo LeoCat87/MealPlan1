@@ -4,3 +4,4 @@ xlsxwriter
 gspread
 oauth2client
 pandas
+streamlit-js-eval>=0.1.5

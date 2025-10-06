@@ -8,7 +8,68 @@ import gspread
 from google.oauth2.service_account import Credentials
 import re
 import textwrap
+import time
+import hashlib
+import json as _json  # per evitare conflitto col json importato
+import requests  # <-- per scaricare immagini lato server
 
+# -----------------------------
+# Helper per immagini (download lato server)
+# -----------------------------
+def _resolve_image_url(u: str) -> str:
+    """Prova a trasformare link non diretti (Drive/Dropbox) e ottimizza Unsplash."""
+    if not u:
+        return u
+    u = u.strip()
+
+    # Forza HTTPS quando possibile
+    if u.startswith("http://"):
+        u = "https://" + u[7:]
+
+    # Google Drive: /file/d/<ID>/view  -> uc?export=view&id=<ID>
+    if "drive.google.com" in u:
+        m = re.search(r"/d/([a-zA-Z0-9_-]{10,})", u)
+        if m:
+            return f"https://drive.google.com/uc?export=view&id={m.group(1)}"
+
+    # Dropbox: aggiungi ?raw=1
+    if "dropbox.com" in u:
+        if "?dl=0" in u or "?dl=1" in u:
+            u = u.replace("?dl=0", "?raw=1").replace("?dl=1", "?raw=1")
+        elif "?raw=1" not in u:
+            u += "?raw=1"
+        return u
+
+    # Unsplash: assicurati host images.unsplash.com + parametri utili
+    if "images.unsplash.com" in u:
+        sep = "&" if "?" in u else "?"
+        if "auto=" not in u:
+            u += f"{sep}auto=format"
+            sep = "&"
+        if "fm=" not in u:
+            u += f"{sep}fm=jpg"
+
+    return u
+
+def _fetch_image_bytes(u: str) -> BytesIO | None:
+    """Scarica l'immagine con UA realistico per evitare blocchi hotlinking/CORS."""
+    try:
+        url = _resolve_image_url(u)
+        if not url or not url.startswith("http"):
+            return None
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+        }
+        r = requests.get(url, headers=headers, timeout=8)
+        r.raise_for_status()
+        return BytesIO(r.content)
+    except Exception:
+        return None
+
+# -----------------------------
+# Secrets / Service Account utilities
+# -----------------------------
 def _normalize_private_key(pk: str) -> str:
     if pk is None:
         return ""
@@ -42,32 +103,25 @@ def _secrets_healthcheck():
     st.write(f"- Inizia con BEGIN: **{'YES' if pk.startswith('-----BEGIN PRIVATE KEY-----') else 'NO'}**")
     st.write(f"- Finisce con END: **{'YES' if pk.endswith('-----END PRIVATE KEY-----') else 'NO'}**")
 
-    # Controllo righe interne (PEM tipicamente ~64 char per riga, ma non è obbligatorio)
     lines = pk.split("\n")
     if lines and lines[0] != "-----BEGIN PRIVATE KEY-----":
         st.warning("⚠️ La prima riga non è esattamente '-----BEGIN PRIVATE KEY-----'")
     if lines and lines[-1] != "-----END PRIVATE KEY-----":
         st.warning("⚠️ L’ultima riga non è esattamente '-----END PRIVATE KEY-----'")
 
-    # Sanity check semplice sul body (no BEGIN/END)
     if len(lines) >= 3:
         body = "".join(lines[1:-1])
-        # base64 semplice: solo A–Z a–z 0–9 + / and +, eventualmente '=' padding
         if not re.fullmatch(r"[A-Za-z0-9+/=]+", body):
             st.warning("⚠️ Il corpo della chiave contiene caratteri non base64 (forse spazi o caratteri tipografici).")
-
-        # padding plausibile
         if len(body) % 4 != 0:
             st.warning("⚠️ Lunghezza del body non multipla di 4 → tipico errore di padding.")
         else:
             st.success("✅ Lunghezza del body sembra corretta (multipla di 4).")
 
-    # Test credenziali reali (senza stampare la chiave)
+    # Test credenziali reali
     try:
         info_fixed = dict(info)
         info_fixed["private_key"] = pk
-        from google.oauth2.service_account import Credentials
-        import gspread
         creds = Credentials.from_service_account_info(
             info_fixed,
             scopes=["https://www.googleapis.com/auth/spreadsheets"]
@@ -78,7 +132,7 @@ def _secrets_healthcheck():
         st.error(f"❌ Autenticazione fallita: {e}")
         st.info("Suggerimento: usa TOML con triple virgolette e a-capo REALI, oppure lascia \\n e usa la normalizzazione nel codice.")
 
-
+# (redef) più robusta; verrà usata a runtime
 def _normalize_private_key(pk: str) -> str:
     # 1) se ci sono backslash-n letterali, convertili in veri a-capo
     if "\\n" in pk:
@@ -88,15 +142,13 @@ def _normalize_private_key(pk: str) -> str:
     # 3) assicurati che righe BEGIN/END siano isolate e senza spazi
     lines = [ln.strip() for ln in pk.split("\n") if ln.strip() != ""]
     # Se non sono già su righe dedicate, ricostruisci il PEM
-    if "BEGIN PRIVATE KEY-----" not in lines[0]:
-        # prova a trovare header/footer
+    if not lines or "BEGIN PRIVATE KEY-----" not in lines[0]:
         try:
             start = next(i for i,l in enumerate(lines) if "BEGIN PRIVATE KEY" in l)
             end   = next(i for i,l in enumerate(lines) if "END PRIVATE KEY"   in l)
             body  = [l for l in lines[start+1:end] if "PRIVATE KEY" not in l]
             pk = "-----BEGIN PRIVATE KEY-----\n" + "\n".join(body) + "\n-----END PRIVATE KEY-----"
         except StopIteration:
-            # fallback: lascia così com’è
             pass
     else:
         pk = "\n".join(lines)
@@ -106,7 +158,6 @@ def _get_sheet_client():
     info = dict(st.secrets["gcp_service_account"])  # copia mutabile
     pk = info.get("private_key", "")
     info["private_key"] = _normalize_private_key(pk)
-    # mini sanity check
     if not (info["private_key"].startswith("-----BEGIN PRIVATE KEY-----") and
             info["private_key"].endswith("-----END PRIVATE KEY-----")):
         st.error("private_key nei Secrets non è nel formato PEM atteso.")
@@ -115,7 +166,7 @@ def _get_sheet_client():
         scopes=["https://www.googleapis.com/auth/spreadsheets"]
     )
     return gspread.authorize(creds)
-    
+
 # -----------------------------
 # Config / Costanti
 # -----------------------------
@@ -124,9 +175,10 @@ DAYS_LABELS = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"]
 MEALS = ["Pranzo", "Cena"]
 UNITS = ["g", "kg", "ml", "l", "pcs", "tbsp", "tsp"]
 DATA_FILE = "mealplanner_data.json"
+SPREADSHEET_NAME = "MealPlannerDB"  # <-- il nome del tuo Google Sheet
 
 # -----------------------------
-# Utilità
+# Utilità numeriche
 # -----------------------------
 def _safe_int(x, default=0):
     try:
@@ -256,12 +308,8 @@ def _normalize_planner_meal_keys(planner, expected_meals):
     return planner
 
 # -----------------------------
-# Persistenza dati
+# Persistenza dati (Google Sheets)
 # -----------------------------
-import time
-import hashlib
-import json as _json  # per evitare conflitto col json importato
-
 def _planner_fingerprint(planner: dict) -> str:
     # fingerprint deterministico dei soli campi rilevanti per la spesa
     canon = []
@@ -292,15 +340,6 @@ def _save_planner_if_changed(debounce_sec: float = 2.0):
             st.toast("Planner salvato ✓")
         except Exception as e:
             st.warning(f"Impossibile salvare adesso: {e}")
-
-def _get_sheet_client():
-    creds = Credentials.from_service_account_info(
-        st.secrets["gcp_service_account"],
-        scopes=["https://www.googleapis.com/auth/spreadsheets"]
-    )
-    return gspread.authorize(creds)
-
-SPREADSHEET_NAME = "MealPlannerDB"  # <-- il nome del tuo Google Sheet
 
 def load_from_sheets():
     gc = _get_sheet_client()
@@ -359,7 +398,7 @@ def save_to_sheets():
     for d in st.session_state.planner["days"]:
         date_str = d["date"]
         for meal, slot in d.items():
-            if meal == "date": 
+            if meal == "date":
                 continue
             slots.append({
                 "week_start": st.session_state.week_start.isoformat(),
@@ -371,6 +410,7 @@ def save_to_sheets():
     ws_slots.clear()
     if slots:
         ws_slots.update([list(slots[0].keys())] + [list(x.values()) for x in slots])
+
 # ---- Export / Import ricette (indipendenti dal backend) ----
 def export_recipes_json() -> bytes:
     payload = {"recipes": st.session_state.get("recipes", [])}
@@ -382,20 +422,20 @@ def import_recipes_json(file_bytes: bytes):
         incoming = data.get("recipes", [])
         # assegna ID nuovi se mancano o se collidono
         existing_ids = {r.get("id") for r in st.session_state.get("recipes", []) if r.get("id") is not None}
-        def _get_new_recipe_id():
+        def _get_new_recipe_id_local():
             if not st.session_state.get("recipes"):
                 return 1
             return max([r.get("id", 0) for r in st.session_state.recipes] or [0]) + 1
 
         for r in incoming:
             if "id" not in r or r["id"] in existing_ids:
-                r["id"] = _get_new_recipe_id()
+                r["id"] = _get_new_recipe_id_local()
         st.session_state.recipes = (st.session_state.get("recipes", []) or []) + incoming
         st.success(f"Importate {len(incoming)} ricette.")
     except Exception as e:
         st.error(f"Import fallita: {e}")
-# ---------- Shopping list helpers (per-settimana) ----------
 
+# ---------- Shopping list helpers (per-settimana) ----------
 def _week_key():
     # chiave univoca della settimana corrente
     return st.session_state.week_start.isoformat()
@@ -443,7 +483,6 @@ def _aggregate_shopping_list_from_planner() -> pd.DataFrame:
     if not rows:
         return pd.DataFrame(columns=["Ingrediente", "Quantità", "Unità"])
     return pd.DataFrame(rows)
-
 
 def _ensure_week_checklist():
     """Inizializza o riallinea la checklist della settimana corrente mantenendo i flag 'Comprato' quando possibile."""
@@ -502,7 +541,7 @@ def _render_shopping_list_ui(embed: bool = True):
     st.download_button("⬇️ Scarica (CSV)", df_export.to_csv(index=False).encode("utf-8"), "shopping_list.csv", use_container_width=True)
 
 # -----------------------------
-# UI Base
+# UI Base (stili)
 # -----------------------------
 st.set_page_config(page_title=APP_TITLE, page_icon="🍳", layout="wide")
 
@@ -554,15 +593,15 @@ div[data-baseweb="select"] > div {
   min-height: 40px;
 }
 div[data-baseweb="select"]:hover { box-shadow: 0 0 0 1px rgba(255,255,255,0.18) inset; }
-input[type="text"], input[type="number"], textarea, .st-af { 
+input[type="text"], input[type="number"], textarea, .st-af {
   border-radius: 10px !important;
 }
 
 /* ---------- radio & checkbox ---------- */
-div[role="radiogroup"] > label { 
+div[role="radiogroup"] > label {
   border: 1px solid rgba(255,255,255,0.12);
-  border-radius: 10px; 
-  padding: .4rem .65rem; 
+  border-radius: 10px;
+  padding: .4rem .65rem;
   margin-right: .5rem;
 }
 div[role="radiogroup"] > label[data-checked="true"] {
@@ -573,7 +612,7 @@ div[role="radiogroup"] > label[data-checked="true"] {
 /* ---------- expander ---------- */
 details {
   border: 1px solid rgba(255,255,255,0.08);
-  border-radius: 12px; 
+  border-radius: 12px;
   padding: .5rem .75rem 1rem;
 }
 div.streamlit-expanderHeader { font-weight: 600; }
@@ -582,6 +621,9 @@ div.streamlit-expanderHeader { font-weight: 600; }
 
 _init_state()
 
+# -----------------------------
+# Sidebar
+# -----------------------------
 with st.sidebar:
     st.title(APP_TITLE)
     pages = ["Pianificatore settimanale", "Ricette"]
@@ -635,7 +677,7 @@ if page == "Pianificatore settimanale":
         with c:
             st.markdown(f"### {DAYS_LABELS[i]}\n**{day_date.day}**")
 
-            # 🔁 ciclo pasti: DA QUI in poi 'meal' esiste
+            # 🔁 ciclo pasti
             for meal in MEALS:
                 slot = st.session_state.planner["days"][i][meal]
 
@@ -669,7 +711,11 @@ if page == "Pianificatore settimanale":
                     if rec:
                         with st.expander("Dettagli", expanded=False):
                             if rec.get("image"):
-                                st.image(rec["image"], use_container_width=True)
+                                img_bytes = _fetch_image_bytes(rec["image"])
+                                if img_bytes:
+                                    st.image(img_bytes, use_container_width=True)
+                                else:
+                                    st.info("Immagine non caricabile. Verifica che il link sia diretto o usa un host compatibile (Unsplash/Drive/Dropbox).")
                             st.caption(f"⏱ {rec['time']} min · Categoria: {rec.get('category','-')}")
                             st.write(rec.get("description", ""))
                         slot["servings"] = st.number_input(
@@ -688,7 +734,6 @@ if page == "Pianificatore settimanale":
     # 👇 Lista della spesa della settimana, integrata nel planner
     with st.expander("Lista della spesa (settimana corrente)", expanded=True):
         _render_shopping_list_ui(embed=False)
-
 
 # -----------------------------
 # RICETTE (CRUD)
@@ -724,10 +769,11 @@ elif page == "Ricette":
             c1, c2 = st.columns([1, 2])
             with c1:
                 if r.get("image"):
-                    try:
-                        st.image(r["image"], use_container_width=True)
-                    except Exception:
-                        st.write("Nessuna anteprima")
+                    img_bytes = _fetch_image_bytes(r["image"])
+                    if img_bytes:
+                        st.image(img_bytes, use_container_width=True)
+                    else:
+                        st.write("Nessuna anteprima (link non diretto o bloccato dal CDN)")
             with c2:
                 st.subheader(r["name"])
                 st.caption(f"Categoria: {r.get('category','-')} · ⏱ {r.get('time','-')} min · Porzioni base: {r.get('servings','-')}")

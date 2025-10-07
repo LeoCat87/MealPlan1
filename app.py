@@ -756,7 +756,7 @@ elif page == "Ricette":
         )
         st.session_state.scroll_to_form = False
 
-    # ---------- FORM PRIMA DELLA LISTA ----------
+    # ---------- FORM (UNICO) PRIMA DELLA LISTA ----------
     st.subheader("Aggiungi / Modifica ricetta")
 
     mode = st.session_state.recipe_form_mode
@@ -898,7 +898,7 @@ elif page == "Ricette":
             c1, c2 = st.columns([1, 2])
             with c1:
                 if r.get("image"):
-                    img_bytes = _fetch_image_bytes(r["image"])  # deve restituire BYTES (vedi fix precedente)
+                    img_bytes = _fetch_image_bytes(r["image"])  # deve restituire BYTES (fix precedente)
                     if img_bytes:
                         st.image(img_bytes, use_container_width=True)
                     else:

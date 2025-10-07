@@ -762,7 +762,8 @@ elif page == "Ricette":
     mode = st.session_state.recipe_form_mode
     editing_recipe = _find_recipe(st.session_state.editing_recipe_id) if mode == "edit" else None
 
-    with st.form("recipe_form", clear_on_submit=(mode == "add")):
+    # 🔑 chiave UNICA del form (evita conflitti con vecchi form)
+    with st.form("recipe_form_main", clear_on_submit=(mode == "add")):
         name = st.text_input("Nome", value=editing_recipe["name"] if editing_recipe else "")
         category = st.text_input("Categoria", value=editing_recipe.get("category","") if editing_recipe else "")
         time_min = st.number_input("Tempo (minuti)", min_value=0, value=_safe_int(editing_recipe.get("time", 0)) if editing_recipe else 0)
@@ -816,6 +817,7 @@ elif page == "Ricette":
                     st.success(f"Ricetta '{name}' aggiunta.")
                 st.session_state.recipe_form_mode = "add"
                 st.session_state.editing_recipe_id = None
+                st.session_state.scroll_to_form = True  # rimani vicino al form
 
         if new_btn:
             st.session_state.recipe_form_mode = "add"
@@ -860,7 +862,7 @@ elif page == "Ricette":
                 if r.get("image"):
                     img_bytes = _fetch_image_bytes(r["image"])
                     if img_bytes:
-                        st.image(img_bytes, use_container_width=True)
+                        st.image(img_bytes, use_container_width=True)  # helper restituisce bytes
                     else:
                         st.write("Nessuna anteprima (link non diretto o bloccato dal CDN)")
             with c2:
@@ -880,8 +882,8 @@ elif page == "Ricette":
                 if b1.button("✏️ Modifica", key=f"edit_{r['id']}"):
                     st.session_state.recipe_form_mode = "edit"
                     st.session_state.editing_recipe_id = r["id"]
-                    st.session_state.scroll_to_form = True   # <--- flag per scroll
-                    st.experimental_rerun()                  # <--- vai subito al form
+                    st.session_state.scroll_to_form = True   # flag per scroll
+                    st.experimental_rerun()                  # vai subito al form
                 if b2.button("🗑️ Elimina", key=f"del_{r['id']}"):
                     st.session_state.recipes = [x for x in st.session_state.recipes if x["id"] != r["id"]]
                     st.toast(f"Ricetta '{r['name']}' eliminata")

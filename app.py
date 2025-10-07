@@ -762,7 +762,21 @@ elif page == "Ricette":
     mode = st.session_state.recipe_form_mode
     editing_recipe = _find_recipe(st.session_state.editing_recipe_id) if mode == "edit" else None
 
-    # 🔑 chiave UNICA del form (evita conflitti con vecchi form)
+    # Prefisso UNICO per tutte le chiavi dinamiche del form (evita collisioni)
+    def _form_prefix():
+        return f"rf_{mode}_{st.session_state.editing_recipe_id or 'new'}"
+
+    # Se è cambiata ricetta/modo, pulisci le vecchie chiavi dinamiche per ingredienti
+    cur_prefix = _form_prefix()
+    if st.session_state.get("_active_form_prefix") != cur_prefix:
+        for k in list(st.session_state.keys()):
+            if isinstance(k, str) and k.startswith("rf_"):
+                try:
+                    del st.session_state[k]
+                except Exception:
+                    pass
+        st.session_state["_active_form_prefix"] = cur_prefix
+
     with st.form("recipe_form_main", clear_on_submit=(mode == "add")):
         name = st.text_input("Nome", value=editing_recipe["name"] if editing_recipe else "")
         category = st.text_input("Categoria", value=editing_recipe.get("category","") if editing_recipe else "")
@@ -773,18 +787,42 @@ elif page == "Ricette":
 
         st.markdown("**Ingredienti**")
         default_ingredients = editing_recipe.get("ingredients", []) if editing_recipe else []
-        ingr_count = st.number_input("Numero ingredienti", min_value=0, max_value=50, value=len(default_ingredients) if default_ingredients else 5)
+        ingr_count = st.number_input(
+            "Numero ingredienti",
+            min_value=0, max_value=50,
+            value=len(default_ingredients) if default_ingredients else 5,
+            key=f"{cur_prefix}_ing_count"
+        )
+
         ingredients: List[Dict[str, Any]] = []
         for idx in range(int(ingr_count)):
             col1, col2, col3 = st.columns([3, 1, 1])
             default = default_ingredients[idx] if idx < len(default_ingredients) else {"name": "", "qty": 0, "unit": UNITS[0]}
-            name_i = col1.text_input(f"Ingrediente {idx+1} - nome", value=default.get("name",""), key=f"ing_name_{idx}")
-            qty_i = col2.number_input(f"Quantità {idx+1}", min_value=0.0, value=float(default.get("qty", 0)), key=f"ing_qty_{idx}")
-            unit_i = col3.selectbox(f"Unità {idx+1}", UNITS, index=(UNITS.index(default.get("unit")) if default.get("unit") in UNITS else 0), key=f"ing_unit_{idx}")
+            name_i = col1.text_input(
+                f"Ingrediente {idx+1} - nome",
+                value=default.get("name",""),
+                key=f"{cur_prefix}_ing_name_{idx}"
+            )
+            qty_i = col2.number_input(
+                f"Quantità {idx+1}",
+                min_value=0.0,
+                value=float(default.get("qty", 0)),
+                key=f"{cur_prefix}_ing_qty_{idx}"
+            )
+            unit_i = col3.selectbox(
+                f"Unità {idx+1}",
+                UNITS,
+                index=(UNITS.index(default.get("unit")) if default.get("unit") in UNITS else 0),
+                key=f"{cur_prefix}_ing_unit_{idx}"
+            )
             if name_i:
                 ingredients.append({"name": name_i, "qty": qty_i, "unit": unit_i})
 
-        instructions = st.text_area("Istruzioni", value=editing_recipe.get("instructions","") if editing_recipe else "")
+        instructions = st.text_area(
+            "Istruzioni",
+            value=editing_recipe.get("instructions","") if editing_recipe else "",
+            key=f"{cur_prefix}_instructions"
+        )
 
         c_azioni = st.columns(3)
         with c_azioni[0]:
@@ -817,7 +855,7 @@ elif page == "Ricette":
                     st.success(f"Ricetta '{name}' aggiunta.")
                 st.session_state.recipe_form_mode = "add"
                 st.session_state.editing_recipe_id = None
-                st.session_state.scroll_to_form = True  # rimani vicino al form
+                st.session_state.scroll_to_form = True  # resta vicino al form
 
         if new_btn:
             st.session_state.recipe_form_mode = "add"
@@ -860,9 +898,9 @@ elif page == "Ricette":
             c1, c2 = st.columns([1, 2])
             with c1:
                 if r.get("image"):
-                    img_bytes = _fetch_image_bytes(r["image"])
+                    img_bytes = _fetch_image_bytes(r["image"])  # deve restituire BYTES (vedi fix precedente)
                     if img_bytes:
-                        st.image(img_bytes, use_container_width=True)  # helper restituisce bytes
+                        st.image(img_bytes, use_container_width=True)
                     else:
                         st.write("Nessuna anteprima (link non diretto o bloccato dal CDN)")
             with c2:
@@ -882,8 +920,8 @@ elif page == "Ricette":
                 if b1.button("✏️ Modifica", key=f"edit_{r['id']}"):
                     st.session_state.recipe_form_mode = "edit"
                     st.session_state.editing_recipe_id = r["id"]
-                    st.session_state.scroll_to_form = True   # flag per scroll
-                    st.experimental_rerun()                  # vai subito al form
+                    st.session_state.scroll_to_form = True
+                    st.experimental_rerun()
                 if b2.button("🗑️ Elimina", key=f"del_{r['id']}"):
                     st.session_state.recipes = [x for x in st.session_state.recipes if x["id"] != r["id"]]
                     st.toast(f"Ricetta '{r['name']}' eliminata")

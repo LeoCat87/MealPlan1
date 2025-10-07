@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 from io import BytesIO
 from datetime import date, timedelta
@@ -746,7 +747,90 @@ if page == "Pianificatore settimanale":
 elif page == "Ricette":
     st.header("Ricettario")
 
-    # Filtri
+    # ----- Anchor per scroll automatico sul form -----
+    st.markdown('<div id="recipe_form_top"></div>', unsafe_allow_html=True)
+    if st.session_state.get("scroll_to_form"):
+        components.html(
+            "<script>document.getElementById('recipe_form_top').scrollIntoView({behavior:'instant', block:'start'});</script>",
+            height=0,
+        )
+        st.session_state.scroll_to_form = False
+
+    # ---------- FORM PRIMA DELLA LISTA ----------
+    st.subheader("Aggiungi / Modifica ricetta")
+
+    mode = st.session_state.recipe_form_mode
+    editing_recipe = _find_recipe(st.session_state.editing_recipe_id) if mode == "edit" else None
+
+    with st.form("recipe_form", clear_on_submit=(mode == "add")):
+        name = st.text_input("Nome", value=editing_recipe["name"] if editing_recipe else "")
+        category = st.text_input("Categoria", value=editing_recipe.get("category","") if editing_recipe else "")
+        time_min = st.number_input("Tempo (minuti)", min_value=0, value=_safe_int(editing_recipe.get("time", 0)) if editing_recipe else 0)
+        servings = st.number_input("Porzioni base", min_value=1, value=_safe_int(editing_recipe.get("servings", 2)) if editing_recipe else 2)
+        image = st.text_input("URL immagine (opzionale)", value=editing_recipe.get("image","") if editing_recipe else "")
+        description = st.text_area("Descrizione", value=editing_recipe.get("description","") if editing_recipe else "")
+
+        st.markdown("**Ingredienti**")
+        default_ingredients = editing_recipe.get("ingredients", []) if editing_recipe else []
+        ingr_count = st.number_input("Numero ingredienti", min_value=0, max_value=50, value=len(default_ingredients) if default_ingredients else 5)
+        ingredients: List[Dict[str, Any]] = []
+        for idx in range(int(ingr_count)):
+            col1, col2, col3 = st.columns([3, 1, 1])
+            default = default_ingredients[idx] if idx < len(default_ingredients) else {"name": "", "qty": 0, "unit": UNITS[0]}
+            name_i = col1.text_input(f"Ingrediente {idx+1} - nome", value=default.get("name",""), key=f"ing_name_{idx}")
+            qty_i = col2.number_input(f"Quantità {idx+1}", min_value=0.0, value=float(default.get("qty", 0)), key=f"ing_qty_{idx}")
+            unit_i = col3.selectbox(f"Unità {idx+1}", UNITS, index=(UNITS.index(default.get("unit")) if default.get("unit") in UNITS else 0), key=f"ing_unit_{idx}")
+            if name_i:
+                ingredients.append({"name": name_i, "qty": qty_i, "unit": unit_i})
+
+        instructions = st.text_area("Istruzioni", value=editing_recipe.get("instructions","") if editing_recipe else "")
+
+        c_azioni = st.columns(3)
+        with c_azioni[0]:
+            submit = st.form_submit_button("💾 Salva ricetta")
+        with c_azioni[1]:
+            new_btn = st.form_submit_button("➕ Nuova (svuota)")
+        with c_azioni[2]:
+            cancel_btn = st.form_submit_button("❌ Annulla modifica")
+
+        if submit:
+            if not name.strip():
+                st.error("Il nome è obbligatorio.")
+            else:
+                payload = {
+                    "name": name.strip(),
+                    "category": category.strip(),
+                    "time": int(time_min),
+                    "servings": int(servings),
+                    "image": image.strip(),
+                    "description": description.strip(),
+                    "ingredients": ingredients,
+                    "instructions": instructions.strip(),
+                }
+                if mode == "edit" and editing_recipe:
+                    editing_recipe.update(payload)
+                    st.success(f"Ricetta '{name}' aggiornata.")
+                else:
+                    payload["id"] = _get_new_recipe_id()
+                    st.session_state.recipes.append(payload)
+                    st.success(f"Ricetta '{name}' aggiunta.")
+                st.session_state.recipe_form_mode = "add"
+                st.session_state.editing_recipe_id = None
+
+        if new_btn:
+            st.session_state.recipe_form_mode = "add"
+            st.session_state.editing_recipe_id = None
+            st.session_state.scroll_to_form = True
+            st.experimental_rerun()
+
+        if cancel_btn:
+            st.session_state.recipe_form_mode = "add"
+            st.session_state.editing_recipe_id = None
+            st.info("Modifica annullata.")
+
+    st.divider()
+
+    # ---------- Filtri (dopo il form) ----------
     with st.container():
         f1, f2, f3 = st.columns([2, 1, 1])
         text_query = f1.text_input("Cerca per nome/descrizione", "")
@@ -754,7 +838,7 @@ elif page == "Ricette":
         cat = f2.selectbox("Categoria", ["Tutte"] + categories)
         max_time = f3.number_input("Tempo max (min)", min_value=0, value=0)
 
-    # Lista ricette filtrata
+    # ---------- Lista ricette filtrata ----------
     def _passes_filters(r):
         if text_query:
             q = text_query.lower()
@@ -796,9 +880,12 @@ elif page == "Ricette":
                 if b1.button("✏️ Modifica", key=f"edit_{r['id']}"):
                     st.session_state.recipe_form_mode = "edit"
                     st.session_state.editing_recipe_id = r["id"]
+                    st.session_state.scroll_to_form = True   # <--- flag per scroll
+                    st.experimental_rerun()                  # <--- vai subito al form
                 if b2.button("🗑️ Elimina", key=f"del_{r['id']}"):
                     st.session_state.recipes = [x for x in st.session_state.recipes if x["id"] != r["id"]]
                     st.toast(f"Ricetta '{r['name']}' eliminata")
+
 
     st.divider()
     st.subheader("Aggiungi / Modifica ricetta")

@@ -409,40 +409,40 @@ with st.sidebar:
     st.title(APP_TITLE)
 
 # ---- PROFILO (crea PRIMA, poi rendi il selectbox; pulizia input con flag) ----
-st.caption("Profilo")
+    st.caption("Profilo")
 
 # (A) Se il run precedente ha richiesto di pulire il campo, fallo PRIMA di creare il widget
-if st.session_state.get("_clear_new_profile"):
-    st.session_state["new_profile_name"] = ""  # <-- lecito: avviene prima del widget
-    del st.session_state["_clear_new_profile"]
+    if st.session_state.get("_clear_new_profile"):
+        st.session_state["new_profile_name"] = ""  # <-- lecito: avviene prima del widget
+        del st.session_state["_clear_new_profile"]
 
-np_c1, np_c2 = st.columns([2, 1])
-with np_c1:
-    new_profile_name = st.text_input(
-        "Nuovo profilo",
-        key="new_profile_name",
-        placeholder="Es. Famiglia",
+    np_c1, np_c2 = st.columns([2, 1])
+    with np_c1:
+        new_profile_name = st.text_input(
+            "Nuovo profilo",
+            key="new_profile_name",
+            placeholder="Es. Famiglia",
+            label_visibility="collapsed",
+        )
+    with np_c2:
+        if st.button("Crea"):
+            name = (new_profile_name or "").strip()
+            if name:
+                if name not in st.session_state.profiles:
+                    st.session_state.profiles.append(name)
+                st.session_state.current_profile = name
+                # (B) Chiedi di pulire l'input nel prossimo run, poi rerun
+                st.session_state["_clear_new_profile"] = True
+                st.experimental_rerun()
+
+    st.selectbox(
+        "Seleziona profilo",
+        st.session_state.profiles,
+        index=st.session_state.profiles.index(st.session_state.current_profile)
+              if st.session_state.current_profile in st.session_state.profiles else 0,
+        key="current_profile",
         label_visibility="collapsed",
     )
-with np_c2:
-    if st.button("Crea"):
-        name = (new_profile_name or "").strip()
-        if name:
-            if name not in st.session_state.profiles:
-                st.session_state.profiles.append(name)
-            st.session_state.current_profile = name
-            # (B) Chiedi di pulire l'input nel prossimo run, poi rerun
-            st.session_state["_clear_new_profile"] = True
-            st.experimental_rerun()
-
-st.selectbox(
-    "Seleziona profilo",
-    st.session_state.profiles,
-    index=st.session_state.profiles.index(st.session_state.current_profile)
-          if st.session_state.current_profile in st.session_state.profiles else 0,
-    key="current_profile",
-    label_visibility="collapsed",
-)
 
     st.divider()
     pages = ["Pianificatore settimanale", "Ricette"]

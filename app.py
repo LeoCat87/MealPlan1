@@ -1,29 +1,36 @@
+# app.py
 import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
 from io import BytesIO
 from datetime import date, timedelta
-import json
 from typing import List, Dict, Any
-import gspread
-from google.oauth2.service_account import Credentials
-import re
-import textwrap
+import json
+import json as _json  # per fingerprint deterministico
 import time
 import hashlib
-import json as _json  # per evitare conflitto col json importato
-import requests  # <-- per scaricare immagini lato server
+import re
+import requests
+import gspread
+from google.oauth2.service_account import Credentials
 
 # -----------------------------
-# Helper per immagini (download lato server)
+# CONFIG / COSTANTI
+# -----------------------------
+APP_TITLE = "MealPlanner"
+DAYS_LABELS = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"]
+MEALS = ["Pranzo", "Cena"]
+UNITS = ["g", "kg", "ml", "l", "pcs", "tbsp", "tsp"]
+SPREADSHEET_NAME = "MealPlannerDB"  # nome del Google Sheet
+
+# -----------------------------
+# HELPER IMMAGINI (download lato server)
 # -----------------------------
 def _resolve_image_url(u: str) -> str:
-    """Prova a trasformare link non diretti (Drive/Dropbox) e ottimizza Unsplash."""
+    """Trasforma link non diretti e ottimizza alcuni host."""
     if not u:
         return u
     u = u.strip()
-
-    # Forza HTTPS quando possibile
     if u.startswith("http://"):
         u = "https://" + u[7:]
 
@@ -33,7 +40,7 @@ def _resolve_image_url(u: str) -> str:
         if m:
             return f"https://drive.google.com/uc?export=view&id={m.group(1)}"
 
-    # Dropbox: aggiungi ?raw=1
+    # Dropbox: ?dl=0/1 -> ?raw=1
     if "dropbox.com" in u:
         if "?dl=0" in u or "?dl=1" in u:
             u = u.replace("?dl=0", "?raw=1").replace("?dl=1", "?raw=1")
@@ -41,7 +48,7 @@ def _resolve_image_url(u: str) -> str:
             u += "?raw=1"
         return u
 
-    # Unsplash: assicurati host images.unsplash.com + parametri utili
+    # Unsplash CDN: assicura parametri utili
     if "images.unsplash.com" in u:
         sep = "&" if "?" in u else "?"
         if "auto=" not in u:
@@ -49,11 +56,10 @@ def _resolve_image_url(u: str) -> str:
             sep = "&"
         if "fm=" not in u:
             u += f"{sep}fm=jpg"
-
     return u
 
 def _fetch_image_bytes(u: str) -> bytes | None:
-    """Scarica l'immagine e restituisce bytes (non BytesIO), per compatibilità con st.image."""
+    """Scarica l'immagine e restituisce bytes (compatibile con st.image)."""
     try:
         url = _resolve_image_url(u)
         if not url or not url.startswith("http"):
@@ -65,94 +71,27 @@ def _fetch_image_bytes(u: str) -> bytes | None:
         r = requests.get(url, headers=headers, timeout=8)
         r.raise_for_status()
         data = r.content
-        # piccolo sanity check (qualche CDN risponde HTML)
         if not data or len(data) < 32:
             return None
-        return data  # <--- bytes, non BytesIO
+        return data
     except Exception:
         return None
 
-
 # -----------------------------
-# Secrets / Service Account utilities
+# SECRETS / GOOGLE AUTH
 # -----------------------------
 def _normalize_private_key(pk: str) -> str:
     if pk is None:
         return ""
-    # 1) \n letterali -> newline reali
     if "\\n" in pk:
         pk = pk.replace("\\n", "\n")
-    # 2) rimuovi CR e spazi laterali
     pk = pk.strip().replace("\r", "")
-    # 3) togli spazi di indentazione accidentali
-    pk = "\n".join([ln.strip() for ln in pk.split("\n")])
-    return pk
-
-def _secrets_healthcheck():
-    try:
-        info = st.secrets["gcp_service_account"]
-    except Exception as e:
-        st.error(f"❌ Nessuna sezione [gcp_service_account] nei Secrets: {e}")
-        return
-
-    required = ["type","project_id","private_key_id","private_key","client_email","client_id","token_uri"]
-    missing = [k for k in required if k not in info]
-    if missing:
-        st.error(f"❌ Mancano questi campi nei Secrets: {', '.join(missing)}")
-        return
-
-    pk_raw = str(info.get("private_key", ""))
-    pk = _normalize_private_key(pk_raw)
-
-    st.markdown("### Verifica `private_key`")
-    st.write(f"- Lunghezza normalizzata: **{len(pk)}** caratteri")
-    st.write(f"- Inizia con BEGIN: **{'YES' if pk.startswith('-----BEGIN PRIVATE KEY-----') else 'NO'}**")
-    st.write(f"- Finisce con END: **{'YES' if pk.endswith('-----END PRIVATE KEY-----') else 'NO'}**")
-
-    lines = pk.split("\n")
-    if lines and lines[0] != "-----BEGIN PRIVATE KEY-----":
-        st.warning("⚠️ La prima riga non è esattamente '-----BEGIN PRIVATE KEY-----'")
-    if lines and lines[-1] != "-----END PRIVATE KEY-----":
-        st.warning("⚠️ L’ultima riga non è esattamente '-----END PRIVATE KEY-----'")
-
-    if len(lines) >= 3:
-        body = "".join(lines[1:-1])
-        if not re.fullmatch(r"[A-Za-z0-9+/=]+", body):
-            st.warning("⚠️ Il corpo della chiave contiene caratteri non base64 (forse spazi o caratteri tipografici).")
-        if len(body) % 4 != 0:
-            st.warning("⚠️ Lunghezza del body non multipla di 4 → tipico errore di padding.")
-        else:
-            st.success("✅ Lunghezza del body sembra corretta (multipla di 4).")
-
-    # Test credenziali reali
-    try:
-        info_fixed = dict(info)
-        info_fixed["private_key"] = pk
-        creds = Credentials.from_service_account_info(
-            info_fixed,
-            scopes=["https://www.googleapis.com/auth/spreadsheets"]
-        )
-        client = gspread.authorize(creds)
-        st.success("✅ Credenziali valide: autenticazione riuscita.")
-    except Exception as e:
-        st.error(f"❌ Autenticazione fallita: {e}")
-        st.info("Suggerimento: usa TOML con triple virgolette e a-capo REALI, oppure lascia \\n e usa la normalizzazione nel codice.")
-
-# (redef) più robusta; verrà usata a runtime
-def _normalize_private_key(pk: str) -> str:
-    # 1) se ci sono backslash-n letterali, convertili in veri a-capo
-    if "\\n" in pk:
-        pk = pk.replace("\\n", "\n")
-    # 2) rimuovi spazi laterali e CR (\r) parassiti
-    pk = pk.strip().replace("\r", "")
-    # 3) assicurati che righe BEGIN/END siano isolate e senza spazi
-    lines = [ln.strip() for ln in pk.split("\n") if ln.strip() != ""]
-    # Se non sono già su righe dedicate, ricostruisci il PEM
+    lines = [ln.strip() for ln in pk.split("\n") if ln.strip()]
     if not lines or "BEGIN PRIVATE KEY-----" not in lines[0]:
         try:
-            start = next(i for i,l in enumerate(lines) if "BEGIN PRIVATE KEY" in l)
-            end   = next(i for i,l in enumerate(lines) if "END PRIVATE KEY"   in l)
-            body  = [l for l in lines[start+1:end] if "PRIVATE KEY" not in l]
+            start = next(i for i, l in enumerate(lines) if "BEGIN PRIVATE KEY" in l)
+            end = next(i for i, l in enumerate(lines) if "END PRIVATE KEY" in l)
+            body = [l for l in lines[start + 1 : end] if "PRIVATE KEY" not in l]
             pk = "-----BEGIN PRIVATE KEY-----\n" + "\n".join(body) + "\n-----END PRIVATE KEY-----"
         except StopIteration:
             pass
@@ -161,30 +100,52 @@ def _normalize_private_key(pk: str) -> str:
     return pk
 
 def _get_sheet_client():
-    info = dict(st.secrets["gcp_service_account"])  # copia mutabile
-    pk = info.get("private_key", "")
-    info["private_key"] = _normalize_private_key(pk)
-    if not (info["private_key"].startswith("-----BEGIN PRIVATE KEY-----") and
-            info["private_key"].endswith("-----END PRIVATE KEY-----")):
+    info = dict(st.secrets["gcp_service_account"])
+    info["private_key"] = _normalize_private_key(info.get("private_key", ""))
+    if not (info["private_key"].startswith("-----BEGIN PRIVATE KEY-----") and info["private_key"].endswith("-----END PRIVATE KEY-----")):
         st.error("private_key nei Secrets non è nel formato PEM atteso.")
     creds = Credentials.from_service_account_info(
-        info,
-        scopes=["https://www.googleapis.com/auth/spreadsheets"]
+        info, scopes=["https://www.googleapis.com/auth/spreadsheets"]
     )
     return gspread.authorize(creds)
 
-# -----------------------------
-# Config / Costanti
-# -----------------------------
-APP_TITLE = "MealPlanner"
-DAYS_LABELS = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"]
-MEALS = ["Pranzo", "Cena"]
-UNITS = ["g", "kg", "ml", "l", "pcs", "tbsp", "tsp"]
-DATA_FILE = "mealplanner_data.json"
-SPREADSHEET_NAME = "MealPlannerDB"  # <-- il nome del tuo Google Sheet
+def _secrets_healthcheck():
+    try:
+        info = st.secrets["gcp_service_account"]
+    except Exception as e:
+        st.error(f"❌ Nessuna sezione [gcp_service_account] nei Secrets: {e}")
+        return
+    required = ["type","project_id","private_key_id","private_key","client_email","client_id","token_uri"]
+    missing = [k for k in required if k not in info]
+    if missing:
+        st.error(f"❌ Mancano questi campi nei Secrets: {', '.join(missing)}")
+        return
+    pk = _normalize_private_key(str(info.get("private_key","")))
+    st.write(f"Chiave normalizzata: {len(pk)} char; BEGIN/END ok: {pk.startswith('-----BEGIN PRIVATE KEY-----') and pk.endswith('-----END PRIVATE KEY-----')}")
+    try:
+        _get_sheet_client()
+        st.success("✅ Credenziali valide.")
+    except Exception as e:
+        st.error(f"❌ Autenticazione fallita: {e}")
 
 # -----------------------------
-# Utilità numeriche
+# PROFILI -> worksheet per profilo
+# -----------------------------
+def _sheet_name_for(base: str, profile: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_-]+", "_", (profile or "Default").strip())
+    return f"{base}__{safe}" if safe.lower() != "default" else base
+
+def _get_or_create_ws(sh, title: str, headers: list[str]):
+    try:
+        ws = sh.worksheet(title)
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title=title, rows=200, cols=max(10, len(headers)))
+        if headers:
+            ws.update([headers])
+    return ws
+
+# -----------------------------
+# UTILITÀ
 # -----------------------------
 def _safe_int(x, default=0):
     try:
@@ -199,37 +160,8 @@ def _safe_float(x, default=0.0):
         return default
 
 # -----------------------------
-# Stato iniziale
+# STATO INIZIALE
 # -----------------------------
-def _init_state():
-    if "recipes" not in st.session_state:
-        st.session_state.recipes = _demo_recipes()
-    if "planner" not in st.session_state:
-        st.session_state.planner = _empty_week()
-    if "week_start" not in st.session_state:
-        today = date.today()
-        st.session_state.week_start = today - timedelta(days=today.weekday())
-    if "recipe_form_mode" not in st.session_state:
-        st.session_state.recipe_form_mode = "add"  # add | edit
-    if "editing_recipe_id" not in st.session_state:
-        st.session_state.editing_recipe_id = None
-    # normalizza planner (utile se hai vecchie chiavi LUNCH/DINNER)
-    st.session_state.planner = _normalize_planner_meal_keys(st.session_state.planner, MEALS)
-
-def _empty_week(start: date | None = None):
-    if start is None:
-        today = date.today()
-        start = today - timedelta(days=today.weekday())
-    week = {"start": str(start), "days": []}
-    for i in range(7):
-        day_date = start + timedelta(days=i)
-        day_slots = {m: {"recipe_id": None, "servings": 2} for m in MEALS}
-        week["days"].append({
-            "date": str(day_date),
-            **day_slots,
-        })
-    return week
-
 def _demo_recipes():
     return [
         {
@@ -268,14 +200,16 @@ def _demo_recipes():
         },
     ]
 
-def _get_new_recipe_id() -> int:
-    if not st.session_state.recipes:
-        return 1
-    return max(r["id"] for r in st.session_state.recipes) + 1
-
-def _get_recipe_options():
-    # mappa: label -> id
-    return {f'{r["name"]} · {r.get("time","-")} min': r["id"] for r in st.session_state.recipes}
+def _empty_week(start: date | None = None):
+    if start is None:
+        today = date.today()
+        start = today - timedelta(days=today.weekday())
+    week = {"start": str(start), "days": []}
+    for i in range(7):
+        day_date = start + timedelta(days=i)
+        day_slots = {m: {"recipe_id": None, "servings": 2} for m in MEALS}
+        week["days"].append({"date": str(day_date), **day_slots})
+    return week
 
 def _find_recipe(rid):
     if rid is None:
@@ -285,9 +219,14 @@ def _find_recipe(rid):
             return r
     return None
 
-# -----------------------------
-# Normalizzazione planner
-# -----------------------------
+def _get_new_recipe_id() -> int:
+    if not st.session_state.recipes:
+        return 1
+    return max(r["id"] for r in st.session_state.recipes) + 1
+
+def _get_recipe_options():
+    return {f'{r["name"]} · {r.get("time","-")} min': r["id"] for r in st.session_state.recipes}
+
 def _normalize_planner_meal_keys(planner, expected_meals):
     if not planner or "days" not in planner:
         return planner
@@ -295,7 +234,7 @@ def _normalize_planner_meal_keys(planner, expected_meals):
     new_days = []
     for day in planner.get("days", []):
         new_day = {"date": day.get("date")}
-        lower_map = {k.lower(): k for k in day.keys() if k not in ("date",)}
+        lower_map = {k.lower(): k for k in day.keys() if k != "date"}
         for m in expected_meals:
             if m in day:
                 new_day[m] = day[m]
@@ -305,19 +244,36 @@ def _normalize_planner_meal_keys(planner, expected_meals):
                 if synonyms.get(k_lower) == m:
                     inv = orig
                     break
-            if inv:
-                new_day[m] = day.get(inv, {"recipe_id": None, "servings": 2})
-            else:
-                new_day[m] = {"recipe_id": None, "servings": 2}
+            new_day[m] = day.get(inv, {"recipe_id": None, "servings": 2}) if inv else {"recipe_id": None, "servings": 2}
         new_days.append(new_day)
     planner["days"] = new_days
     return planner
 
+def _init_state():
+    # profili
+    if "profiles" not in st.session_state:
+        st.session_state.profiles = ["Default"]
+    if "current_profile" not in st.session_state:
+        st.session_state.current_profile = "Default"
+
+    # dati base
+    if "recipes" not in st.session_state:
+        st.session_state.recipes = _demo_recipes()
+    if "planner" not in st.session_state:
+        st.session_state.planner = _empty_week()
+    if "week_start" not in st.session_state:
+        today = date.today()
+        st.session_state.week_start = today - timedelta(days=today.weekday())
+    if "recipe_form_mode" not in st.session_state:
+        st.session_state.recipe_form_mode = "add"  # add | edit
+    if "editing_recipe_id" not in st.session_state:
+        st.session_state.editing_recipe_id = None
+    st.session_state.planner = _normalize_planner_meal_keys(st.session_state.planner, MEALS)
+
 # -----------------------------
-# Persistenza dati (Google Sheets)
+# PERSISTENZA (fingerprint + autosave planner)
 # -----------------------------
 def _planner_fingerprint(planner: dict) -> str:
-    # fingerprint deterministico dei soli campi rilevanti per la spesa
     canon = []
     for d in planner.get("days", []):
         row = {"date": d["date"]}
@@ -330,94 +286,24 @@ def _planner_fingerprint(planner: dict) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 def _save_planner_if_changed(debounce_sec: float = 2.0):
-    # salva su Sheets se il planner è cambiato rispetto all'ultimo salvataggio
     if "planner" not in st.session_state:
         return
     fp = _planner_fingerprint(st.session_state.planner)
     last_fp = st.session_state.get("_last_saved_planner_fp")
     last_ts = st.session_state.get("_last_saved_ts", 0.0)
     now = time.time()
-
     if fp != last_fp and (now - last_ts) >= debounce_sec:
         try:
-            save_to_sheets()  # usa la tua funzione già definita
+            save_to_sheets()
             st.session_state["_last_saved_planner_fp"] = fp
             st.session_state["_last_saved_ts"] = now
             st.toast("Planner salvato ✓")
         except Exception as e:
             st.warning(f"Impossibile salvare adesso: {e}")
 
-def load_from_sheets():
-    gc = _get_sheet_client()
-    sh = gc.open(SPREADSHEET_NAME)
-
-    # carica ricette
-    ws_recipes = sh.worksheet("recipes")
-    rows = ws_recipes.get_all_records()
-    st.session_state.recipes = []
-    for r in rows:
-        r["ingredients"] = json.loads(r.get("ingredients_json", "[]"))
-        st.session_state.recipes.append(r)
-
-    # carica planner
-    ws_slots = sh.worksheet("planner_slots")
-    slots = ws_slots.get_all_records()
-    planner = {"start": None, "days": []}
-    for s in slots:
-        date_str = s["date"]
-        meal = s["meal"]
-        rid = int(s["recipe_id"]) if s["recipe_id"] else None
-        servings = int(s["servings"])
-        planner.setdefault("days", []).append({
-            "date": date_str,
-            meal: {"recipe_id": rid, "servings": servings}
-        })
-    st.session_state.planner = planner
-    st.success("✅ Dati caricati da Google Sheets")
-
-def save_to_sheets():
-    gc = _get_sheet_client()
-    sh = gc.open(SPREADSHEET_NAME)
-
-    # salva ricette
-    ws_recipes = sh.worksheet("recipes")
-    rows = []
-    for r in st.session_state.recipes:
-        rows.append({
-            "id": r["id"],
-            "name": r["name"],
-            "category": r.get("category", ""),
-            "time": r.get("time", 0),
-            "servings": r.get("servings", 2),
-            "image": r.get("image", ""),
-            "description": r.get("description", ""),
-            "instructions": r.get("instructions", ""),
-            "ingredients_json": json.dumps(r.get("ingredients", []), ensure_ascii=False)
-        })
-    ws_recipes.clear()
-    if rows:
-        ws_recipes.update([list(rows[0].keys())] + [list(x.values()) for x in rows])
-
-    # salva planner
-    ws_slots = sh.worksheet("planner_slots")
-    slots = []
-    for d in st.session_state.planner["days"]:
-        date_str = d["date"]
-        for meal, slot in d.items():
-            if meal == "date":
-                continue
-            slots.append({
-                "week_start": st.session_state.week_start.isoformat(),
-                "date": date_str,
-                "meal": meal,
-                "recipe_id": slot.get("recipe_id"),
-                "servings": slot.get("servings", 2)
-            })
-    ws_slots.clear()
-    if slots:
-        ws_slots.update([list(slots[0].keys())] + [list(x.values()) for x in slots])
-
-# ---- Export / Import ricette (indipendenti dal backend) ----
+# -----------------------------
+# EXPORT/IMPORT RICETTE (JSON)
+# -----------------------------
 def export_recipes_json() -> bytes:
     payload = {"recipes": st.session_state.get("recipes", [])}
     return json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
@@ -426,28 +312,27 @@ def import_recipes_json(file_bytes: bytes):
     try:
         data = json.loads(file_bytes.decode("utf-8"))
         incoming = data.get("recipes", [])
-        # assegna ID nuovi se mancano o se collidono
         existing_ids = {r.get("id") for r in st.session_state.get("recipes", []) if r.get("id") is not None}
-        def _get_new_recipe_id_local():
+        def _new_id_local():
             if not st.session_state.get("recipes"):
                 return 1
             return max([r.get("id", 0) for r in st.session_state.recipes] or [0]) + 1
-
         for r in incoming:
             if "id" not in r or r["id"] in existing_ids:
-                r["id"] = _get_new_recipe_id_local()
+                r["id"] = _new_id_local()
         st.session_state.recipes = (st.session_state.get("recipes", []) or []) + incoming
         st.success(f"Importate {len(incoming)} ricette.")
     except Exception as e:
         st.error(f"Import fallita: {e}")
 
-# ---------- Shopping list helpers (per-settimana) ----------
+# -----------------------------
+# LISTA SPESA (per profilo+settimana)
+# -----------------------------
 def _week_key():
-    # chiave univoca della settimana corrente
-    return st.session_state.week_start.isoformat()
+    prof = st.session_state.get("current_profile", "Default")
+    return f"{prof}::{st.session_state.week_start.isoformat()}"
 
 def _aggregate_shopping_list_from_planner() -> pd.DataFrame:
-    """Calcola la lista della spesa a partire dal planner della settimana corrente."""
     to_base = {
         "g": ("g", 1), "kg": ("g", 1000),
         "ml": ("ml", 1), "l": ("ml", 1000),
@@ -485,47 +370,34 @@ def _aggregate_shopping_list_from_planner() -> pd.DataFrame:
             qty, unit = round(qty_base, 2), base_unit
         rows.append({"Ingrediente": name, "Quantità": qty, "Unità": unit})
     rows.sort(key=lambda x: (x["Ingrediente"], x["Unità"]))
-    # ✅ garantisci le colonne anche se non ci sono righe
     if not rows:
         return pd.DataFrame(columns=["Ingrediente", "Quantità", "Unità"])
     return pd.DataFrame(rows)
 
 def _ensure_week_checklist():
-    """Inizializza o riallinea la checklist della settimana corrente mantenendo i flag 'Comprato' quando possibile."""
     wk = _week_key()
     df_new = _aggregate_shopping_list_from_planner()
-
     if "shopping_checklists" not in st.session_state:
         st.session_state.shopping_checklists = {}
-
-    # ✅ se la lista è vuota: inizializza/azzera in modo sicuro e termina
     if df_new.empty:
         st.session_state.shopping_checklists[wk] = []
         return
-
     current = st.session_state.shopping_checklists.get(wk)
     if current is None or len(current) == 0:
-        # prima volta: crea con Comprato=False
         df_new["Comprato"] = False
         st.session_state.shopping_checklists[wk] = df_new.to_dict("records")
         return
-
-    # merge “intelligente” per preservare Comprato
-    prev = { (r["Ingrediente"], r["Unità"]) : r.get("Comprato", False) for r in current }
+    prev = {(r["Ingrediente"], r["Unità"]): r.get("Comprato", False) for r in current}
     df_new["Comprato"] = df_new.apply(lambda r: prev.get((r["Ingrediente"], r["Unità"]), False), axis=1)
     st.session_state.shopping_checklists[wk] = df_new.to_dict("records")
 
 def _render_shopping_list_ui(embed: bool = True):
-    """Mostra la UI della lista (checkbox + export) per la settimana corrente."""
     _ensure_week_checklist()
     wk = _week_key()
     recs = st.session_state.shopping_checklists[wk]
-
     if embed:
         st.subheader("🧾 Lista della spesa — settimana corrente")
         st.caption(f"{st.session_state.week_start.strftime('%d/%m/%Y')} → {(st.session_state.week_start + timedelta(days=6)).strftime('%d/%m/%Y')}")
-
-    # elenco con checkbox
     for idx, row in enumerate(recs):
         cols = st.columns([0.08, 0.62, 0.15, 0.15])
         with cols[0]:
@@ -538,7 +410,7 @@ def _render_shopping_list_ui(embed: bool = True):
             st.write(row["Unità"])
         recs[idx]["Comprato"] = bought
 
-    # esportazioni sempre allineate
+    # export
     df_export = pd.DataFrame(recs)
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
@@ -547,93 +419,166 @@ def _render_shopping_list_ui(embed: bool = True):
     st.download_button("⬇️ Scarica (CSV)", df_export.to_csv(index=False).encode("utf-8"), "shopping_list.csv", use_container_width=True)
 
 # -----------------------------
-# UI Base (stili)
+# GOOGLE SHEETS: LOAD / SAVE (per profilo)
+# -----------------------------
+def load_from_sheets():
+    gc = _get_sheet_client()
+    sh = gc.open(SPREADSHEET_NAME)
+    prof = st.session_state.get("current_profile", "Default")
+
+    # ricette
+    recipes_ws_name = _sheet_name_for("recipes", prof)
+    ws_recipes = _get_or_create_ws(sh, recipes_ws_name,
+        ["id","name","category","time","servings","image","description","instructions","ingredients_json"]
+    )
+    rows = ws_recipes.get_all_records()
+    st.session_state.recipes = []
+    for r in rows:
+        try:
+            ings = json.loads(r.get("ingredients_json", "[]"))
+        except Exception:
+            ings = []
+        st.session_state.recipes.append({
+            "id": _safe_int(r.get("id", 0)) or _get_new_recipe_id(),
+            "name": r.get("name",""),
+            "category": r.get("category",""),
+            "time": _safe_int(r.get("time", 0)),
+            "servings": _safe_int(r.get("servings", 2)) or 2,
+            "image": r.get("image",""),
+            "description": r.get("description",""),
+            "instructions": r.get("instructions",""),
+            "ingredients": ings,
+        })
+
+    # planner
+    slots_ws_name = _sheet_name_for("planner_slots", prof)
+    ws_slots = _get_or_create_ws(sh, slots_ws_name, ["week_start","date","meal","recipe_id","servings"])
+    slots = ws_slots.get_all_records()
+    day_map = {}
+    for s in slots:
+        date_str = str(s.get("date","")).strip()
+        meal = str(s.get("meal","")).strip()
+        if not date_str or not meal:
+            continue
+        rid = _safe_int(s.get("recipe_id")) if str(s.get("recipe_id","")).strip() else None
+        servings = _safe_int(s.get("servings", 2)) or 2
+        if date_str not in day_map:
+            day_map[date_str] = {"date": date_str}
+        day_map[date_str][meal] = {"recipe_id": rid, "servings": servings}
+    planner = {"start": None, "days": []}
+    for dstr in sorted(day_map.keys()):
+        day = {"date": dstr}
+        for m in MEALS:
+            day[m] = day_map[dstr].get(m, {"recipe_id": None, "servings": 2})
+        planner["days"].append(day)
+    st.session_state.planner = _normalize_planner_meal_keys(planner, MEALS)
+    st.success(f"✅ Dati caricati per profilo: {prof}")
+
+def save_to_sheets():
+    gc = _get_sheet_client()
+    sh = gc.open(SPREADSHEET_NAME)
+    prof = st.session_state.get("current_profile", "Default")
+
+    # ricette
+    recipes_ws_name = _sheet_name_for("recipes", prof)
+    ws_recipes = _get_or_create_ws(sh, recipes_ws_name,
+        ["id","name","category","time","servings","image","description","instructions","ingredients_json"]
+    )
+    rows = []
+    for r in st.session_state.get("recipes", []):
+        rows.append({
+            "id": r["id"],
+            "name": r.get("name",""),
+            "category": r.get("category",""),
+            "time": int(r.get("time", 0) or 0),
+            "servings": int(r.get("servings", 2) or 2),
+            "image": r.get("image",""),
+            "description": r.get("description",""),
+            "instructions": r.get("instructions",""),
+            "ingredients_json": json.dumps(r.get("ingredients", []), ensure_ascii=False),
+        })
+    ws_recipes.clear()
+    if rows:
+        ws_recipes.update([list(rows[0].keys())] + [list(x.values()) for x in rows])
+
+    # planner
+    slots_ws_name = _sheet_name_for("planner_slots", prof)
+    ws_slots = _get_or_create_ws(sh, slots_ws_name, ["week_start","date","meal","recipe_id","servings"])
+    slots = []
+    for d in st.session_state.get("planner", {}).get("days", []):
+        date_str = d["date"]
+        for meal, slot in d.items():
+            if meal == "date":
+                continue
+            slots.append({
+                "week_start": st.session_state.week_start.isoformat(),
+                "date": date_str,
+                "meal": meal,
+                "recipe_id": slot.get("recipe_id"),
+                "servings": slot.get("servings", 2)
+            })
+    ws_slots.clear()
+    if slots:
+        ws_slots.update([list(slots[0].keys())] + [list(x.values()) for x in slots])
+
+    st.toast(f"Dati salvati per profilo: {prof} ✓")
+
+# -----------------------------
+# UI BASE / STILI
 # -----------------------------
 st.set_page_config(page_title=APP_TITLE, page_icon="🍳", layout="wide")
-
 st.markdown("""
 <style>
-/* ---------- layout & contenitori ---------- */
 .block-container { padding-top: 1.2rem; padding-bottom: 2rem; }
 section[data-testid="stSidebar"] { width: 320px; border-right: 1px solid rgba(255,255,255,0.06); }
 [data-testid="stHeader"] { background: transparent; }
-
-/* ---------- tipografia ---------- */
-h1, h2, h3 { letter-spacing: .2px; }
-h3 { margin-bottom: .25rem; }
-
-/* ---------- bottoni ---------- */
-div.stButton > button {
-  border-radius: 12px;
-  padding: .5rem 1rem;
-  font-weight: 600;
-  border: 1px solid rgba(255,255,255,0.12);
-  transition: transform .05s ease, filter .2s ease, border-color .2s ease;
-}
-div.stButton > button:hover { filter: brightness(1.05); }
-div.stButton > button:active { transform: translateY(1px) scale(.997); }
-
-/* bottoni "primari" (Streamlit li colora con primaryColor) */
-div.stButton > button[kind="primary"] {
-  border-color: rgba(255,255,255,0.18);
-  box-shadow: 0 6px 16px rgba(34,197,94,.25);
-}
-
-/* link button & download button */
-a[kind="link"] {
-  border-radius: 12px !important;
-  padding: .5rem 1rem !important;
-  font-weight: 600 !important;
+h1, h2, h3 { letter-spacing: .2px; } h3 { margin-bottom: .25rem; }
+div.stButton > button, div.stDownloadButton > button, a[kind="link"] {
+  border-radius: 12px; padding: .5rem 1rem; font-weight: 600;
   border: 1px solid rgba(255,255,255,0.12);
 }
-div.stDownloadButton > button {
-  border-radius: 12px;
-  padding: .5rem 1rem;
-  font-weight: 600;
-  border: 1px solid rgba(255,255,255,0.12);
-}
-
-/* ---------- selectbox / textinput / numberinput ---------- */
-div[data-baseweb="select"] > div {
-  border-radius: 10px !important;
-  min-height: 40px;
-}
-div[data-baseweb="select"]:hover { box-shadow: 0 0 0 1px rgba(255,255,255,0.18) inset; }
-input[type="text"], input[type="number"], textarea, .st-af {
-  border-radius: 10px !important;
-}
-
-/* ---------- radio & checkbox ---------- */
-div[role="radiogroup"] > label {
-  border: 1px solid rgba(255,255,255,0.12);
-  border-radius: 10px;
-  padding: .4rem .65rem;
-  margin-right: .5rem;
-}
-div[role="radiogroup"] > label[data-checked="true"] {
-  border-color: rgba(34,197,94,.6);
-  background: rgba(34,197,94,.08);
-}
-
-/* ---------- expander ---------- */
-details {
-  border: 1px solid rgba(255,255,255,0.08);
-  border-radius: 12px;
-  padding: .5rem .75rem 1rem;
-}
+div[data-baseweb="select"] > div { border-radius: 10px !important; min-height: 40px; }
+input[type="text"], input[type="number"], textarea, .st-af { border-radius: 10px !important; }
+details { border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: .5rem .75rem 1rem; }
 div.streamlit-expanderHeader { font-weight: 600; }
+@media (max-width: 640px){
+  header[data-testid="stHeader"] {height: 3rem;}
+  h1 {font-size: 1.35rem;} h2 {font-size: 1.1rem;}
+  .stButton>button, .stDownloadButton>button {width: 100%;}
+}
 </style>
 """, unsafe_allow_html=True)
 
 _init_state()
 
 # -----------------------------
-# Sidebar
+# SIDEBAR
 # -----------------------------
 with st.sidebar:
     st.title(APP_TITLE)
+
+    # ---- PROFILO ----
+    st.caption("Profilo")
+    colp1, colp2 = st.columns([2, 1])
+    with colp1:
+        current_profile = st.selectbox(
+            "Seleziona profilo",
+            st.session_state.profiles,
+            index=st.session_state.profiles.index(st.session_state.current_profile) if st.session_state.current_profile in st.session_state.profiles else 0,
+            label_visibility="collapsed",
+            key="current_profile"
+        )
+    with colp2:
+        new_profile = st.text_input("Nuovo", value="", label_visibility="collapsed", placeholder="Nuovo profilo")
+        if new_profile.strip():
+            if new_profile not in st.session_state.profiles:
+                st.session_state.profiles.append(new_profile.strip())
+                st.session_state.current_profile = new_profile.strip()
+                st.toast(f"Profilo creato: {new_profile.strip()}")
+                st.experimental_rerun()
+
+    st.divider()
     pages = ["Pianificatore settimanale", "Ricette"]
-    # fallback se avevi salvato una pagina non più esistente
     if "page" in st.session_state and st.session_state.page not in pages:
         st.session_state.page = "Pianificatore settimanale"
     page = st.radio("Sezioni", pages, index=0, key="page")
@@ -682,16 +627,10 @@ if page == "Pianificatore settimanale":
         day_date = st.session_state.week_start + timedelta(days=i)
         with c:
             st.markdown(f"### {DAYS_LABELS[i]}\n**{day_date.day}**")
-
-            # 🔁 ciclo pasti
             for meal in MEALS:
                 slot = st.session_state.planner["days"][i][meal]
-
-                # opzioni ricette
                 r_opts_map = _get_recipe_options()
                 r_opts = ["-"] + list(r_opts_map.keys())
-
-                # etichetta corrente (se già selezionato)
                 current_label = "-"
                 if slot.get("recipe_id"):
                     rec_cur = _find_recipe(slot["recipe_id"])
@@ -700,7 +639,6 @@ if page == "Pianificatore settimanale":
                         if current_label not in r_opts:
                             r_opts.insert(1, current_label)
 
-                # 🔑 chiavi UNICHE: includono indice, pasto e data
                 sel_key  = f"planner_sel_{i}_{meal}_{day_date.isoformat()}"
                 serv_key = f"planner_serv_{i}_{meal}_{day_date.isoformat()}"
 
@@ -721,33 +659,30 @@ if page == "Pianificatore settimanale":
                                 if img_bytes:
                                     st.image(img_bytes, use_container_width=True)
                                 else:
-                                    st.info("Immagine non caricabile. Verifica che il link sia diretto o usa un host compatibile (Unsplash/Drive/Dropbox).")
+                                    st.info("Immagine non caricabile. Verifica il link o usa un host compatibile.")
                             st.caption(f"⏱ {rec['time']} min · Categoria: {rec.get('category','-')}")
                             st.write(rec.get("description", ""))
                         slot["servings"] = st.number_input(
                             "Porzioni",
-                            min_value=1,
-                            max_value=12,
+                            min_value=1, max_value=12,
                             value=slot.get("servings", 2),
                             key=serv_key,
                         )
                 else:
                     slot["recipe_id"] = None
 
-    # salva subito se ci sono modifiche (debounced)
     _save_planner_if_changed()
 
-    # 👇 Lista della spesa della settimana, integrata nel planner
     with st.expander("Lista della spesa (settimana corrente)", expanded=True):
         _render_shopping_list_ui(embed=False)
 
 # -----------------------------
-# RICETTE (CRUD)
+# RICETTE (form unico in alto + autosave)
 # -----------------------------
 elif page == "Ricette":
     st.header("Ricettario")
 
-    # ----- Anchor per scroll automatico sul form -----
+    # Anchor per scroll automatico al form
     st.markdown('<div id="recipe_form_top"></div>', unsafe_allow_html=True)
     if st.session_state.get("scroll_to_form"):
         components.html(
@@ -762,11 +697,10 @@ elif page == "Ricette":
     mode = st.session_state.recipe_form_mode
     editing_recipe = _find_recipe(st.session_state.editing_recipe_id) if mode == "edit" else None
 
-    # Prefisso UNICO per tutte le chiavi dinamiche del form (evita collisioni)
+    # Prefisso chiavi dinamiche (evita collisioni tra add/edit/ricetta diversa)
     def _form_prefix():
         return f"rf_{mode}_{st.session_state.editing_recipe_id or 'new'}"
 
-    # Se è cambiata ricetta/modo, pulisci le vecchie chiavi dinamiche per ingredienti
     cur_prefix = _form_prefix()
     if st.session_state.get("_active_form_prefix") != cur_prefix:
         for k in list(st.session_state.keys()):
@@ -853,9 +787,16 @@ elif page == "Ricette":
                     payload["id"] = _get_new_recipe_id()
                     st.session_state.recipes.append(payload)
                     st.success(f"Ricetta '{name}' aggiunta.")
+
+                # 🔐 Autosave immediato su Google Sheets (profilo corrente)
+                try:
+                    save_to_sheets()
+                    st.toast("Ricette salvate su Google Sheets ✓")
+                except Exception as e:
+                    st.warning(f"Salvataggio su Sheets non riuscito ora: {e}")
+
                 st.session_state.recipe_form_mode = "add"
                 st.session_state.editing_recipe_id = None
-                st.session_state.scroll_to_form = True  # resta vicino al form
 
         if new_btn:
             st.session_state.recipe_form_mode = "add"
@@ -870,7 +811,7 @@ elif page == "Ricette":
 
     st.divider()
 
-    # ---------- Filtri (dopo il form) ----------
+    # ---------- FILTRI ----------
     with st.container():
         f1, f2, f3 = st.columns([2, 1, 1])
         text_query = f1.text_input("Cerca per nome/descrizione", "")
@@ -878,7 +819,7 @@ elif page == "Ricette":
         cat = f2.selectbox("Categoria", ["Tutte"] + categories)
         max_time = f3.number_input("Tempo max (min)", min_value=0, value=0)
 
-    # ---------- Lista ricette filtrata ----------
+    # ---------- LISTA RICETTE ----------
     def _passes_filters(r):
         if text_query:
             q = text_query.lower()
@@ -898,11 +839,11 @@ elif page == "Ricette":
             c1, c2 = st.columns([1, 2])
             with c1:
                 if r.get("image"):
-                    img_bytes = _fetch_image_bytes(r["image"])  # deve restituire BYTES (fix precedente)
+                    img_bytes = _fetch_image_bytes(r["image"])
                     if img_bytes:
                         st.image(img_bytes, use_container_width=True)
                     else:
-                        st.write("Nessuna anteprima (link non diretto o bloccato dal CDN)")
+                        st.write("Nessuna anteprima (link non diretto o bloccato)")
             with c2:
                 st.subheader(r["name"])
                 st.caption(f"Categoria: {r.get('category','-')} · ⏱ {r.get('time','-')} min · Porzioni base: {r.get('servings','-')}")
@@ -924,4 +865,8 @@ elif page == "Ricette":
                     st.experimental_rerun()
                 if b2.button("🗑️ Elimina", key=f"del_{r['id']}"):
                     st.session_state.recipes = [x for x in st.session_state.recipes if x["id"] != r["id"]]
+                    try:
+                        save_to_sheets()
+                    except Exception:
+                        pass
                     st.toast(f"Ricetta '{r['name']}' eliminata")

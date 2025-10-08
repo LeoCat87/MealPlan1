@@ -1,4 +1,4 @@
-# app.py — MealPlanner (profilo + autosave + immagini lato server) — ottimizzato
+# app.py — MealPlanner (profilo + autosave + immagini lato server) — versione completa e ottimizzata
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -22,6 +22,16 @@ UNITS = ["g", "kg", "ml", "l", "pcs", "tbsp", "tsp"]
 SPREADSHEET_NAME = "MealPlannerDB"  # nome del Google Sheet
 
 # =========================
+# UTILITY: rerun compatibile
+# =========================
+def _rerun():
+    # Streamlit >= 1.27 usa st.rerun(); versioni precedenti st.experimental_rerun()
+    if hasattr(st, "rerun"):
+        st.rerun()
+    else:
+        st.experimental_rerun()
+
+# =========================
 # IMMAGINI (download lato server)
 # =========================
 def _resolve_image_url(u: str) -> str:
@@ -30,21 +40,28 @@ def _resolve_image_url(u: str) -> str:
     u = u.strip()
     if u.startswith("http://"):
         u = "https://" + u[7:]
+
+    # Google Drive: /file/d/<ID>/view  -> uc?export=view&id=<ID>
     if "drive.google.com" in u:
         m = re.search(r"/d/([a-zA-Z0-9_-]{10,})", u)
         if m:
             return f"https://drive.google.com/uc?export=view&id={m.group(1)}"
+
+    # Dropbox: ?dl=0/1 -> ?raw=1
     if "dropbox.com" in u:
         if "?dl=0" in u or "?dl=1" in u:
             u = u.replace("?dl=0", "?raw=1").replace("?dl=1", "?raw=1")
         elif "?raw=1" not in u:
             u += "?raw=1"
+
+    # Unsplash CDN: forza parametri comodi
     if "images.unsplash.com" in u:
         sep = "&" if "?" in u else "?"
         if "auto=" not in u:
             u += f"{sep}auto=format"; sep = "&"
         if "fm=" not in u:
             u += f"{sep}fm=jpg"
+
     return u
 
 def _fetch_image_bytes(u: str) -> bytes | None:
@@ -66,8 +83,10 @@ def _fetch_image_bytes(u: str) -> bytes | None:
 # GOOGLE AUTH / SECRETS
 # =========================
 def _normalize_private_key(pk: str) -> str:
-    if pk is None: return ""
-    if "\\n" in pk: pk = pk.replace("\\n", "\n")
+    if pk is None:
+        return ""
+    if "\\n" in pk:
+        pk = pk.replace("\\n", "\n")
     pk = pk.strip().replace("\r", "")
     lines = [ln.strip() for ln in pk.split("\n") if ln.strip()]
     if not lines or "BEGIN PRIVATE KEY-----" not in lines[0]:
@@ -83,19 +102,29 @@ def _normalize_private_key(pk: str) -> str:
     return pk
 
 def _get_sheet_client():
-    info = dict(st.secrets["gcp_service_account"])
-    info["private_key"] = _normalize_private_key(info.get("private_key", ""))
-    creds = Credentials.from_service_account_info(
-        info, scopes=["https://www.googleapis.com/auth/spreadsheets"]
-    )
-    return gspread.authorize(creds)
+    """
+    Safe: ritorna un client gspread, oppure None se i secrets mancano/non sono validi.
+    Evita crash all'avvio su Streamlit Cloud.
+    """
+    try:
+        info = dict(st.secrets["gcp_service_account"])
+    except Exception:
+        return None
+    try:
+        info["private_key"] = _normalize_private_key(info.get("private_key", ""))
+        creds = Credentials.from_service_account_info(
+            info, scopes=["https://www.googleapis.com/auth/spreadsheets"]
+        )
+        return gspread.authorize(creds)
+    except Exception:
+        return None
 
 def _secrets_healthcheck():
-    try:
-        _get_sheet_client()
+    ok = _get_sheet_client() is not None
+    if ok:
         st.success("✅ Credenziali Google valide.")
-    except Exception as e:
-        st.error(f"❌ Autenticazione fallita: {e}")
+    else:
+        st.error("❌ Credenziali Google non disponibili o non valide. Controlla i Secrets.")
 
 # =========================
 # PROFILI (worksheet per profilo)
@@ -109,15 +138,18 @@ def _get_or_create_ws(sh, title: str, headers: list[str]):
         ws = sh.worksheet(title)
     except gspread.WorksheetNotFound:
         ws = sh.add_worksheet(title=title, rows=400, cols=max(10, len(headers)))
-        if headers: ws.update([headers])
+        if headers:
+            ws.update([headers])
     return ws
 
 # =========================
 # UTIL / STATO
 # =========================
 def _safe_int(x, default=0):
-    try: return int(x)
-    except Exception: return default
+    try:
+        return int(x)
+    except Exception:
+        return default
 
 def _demo_recipes():
     return [
@@ -162,9 +194,11 @@ def _empty_week(start: date | None = None):
     return week
 
 def _find_recipe(rid):
-    if rid is None: return None
+    if rid is None:
+        return None
     for r in st.session_state.recipes:
-        if r["id"] == rid: return r
+        if r["id"] == rid:
+            return r
     return None
 
 def _get_new_recipe_id() -> int:
@@ -174,14 +208,16 @@ def _get_recipe_options():
     return {f'{r["name"]} · {r.get("time","-")} min': r["id"] for r in st.session_state.recipes}
 
 def _normalize_planner_meal_keys(planner, expected_meals):
-    if not planner or "days" not in planner: return planner
+    if not planner or "days" not in planner:
+        return planner
     synonyms = {"lunch":"Pranzo","dinner":"Cena","pranzo":"Pranzo","cena":"Cena"}
     new_days=[]
     for day in planner.get("days", []):
         nd={"date": day.get("date")}
         low={k.lower():k for k in day if k!="date"}
         for m in expected_meals:
-            if m in day: nd[m]=day[m]; continue
+            if m in day:
+                nd[m]=day[m]; continue
             inv=None
             for kl,orig in low.items():
                 if synonyms.get(kl)==m: inv=orig; break
@@ -310,10 +346,14 @@ def _render_shopping_list_ui(embed: bool=True):
     st.download_button("⬇️ Scarica (CSV)", df.to_csv(index=False).encode("utf-8"), "shopping_list.csv", use_container_width=True)
 
 # =========================
-# GOOGLE SHEETS: LOAD / SAVE (profilo)
+# GOOGLE SHEETS: LOAD / SAVE (profilo) — SAFE (non crasha se credenziali mancanti)
 # =========================
 def load_from_sheets():
-    gc=_get_sheet_client(); sh=gc.open(SPREADSHEET_NAME)
+    gc=_get_sheet_client()
+    if gc is None:
+        st.warning("Caricamento da Google Sheets non disponibile (credenziali mancanti o non valide).")
+        return
+    sh=gc.open(SPREADSHEET_NAME)
     prof=st.session_state.get("current_profile","Default")
 
     ws_recipes=_get_or_create_ws(sh, _sheet_name_for("recipes",prof),
@@ -351,7 +391,11 @@ def load_from_sheets():
     st.success(f"✅ Dati caricati per profilo: {prof}")
 
 def save_to_sheets():
-    gc=_get_sheet_client(); sh=gc.open(SPREADSHEET_NAME)
+    gc=_get_sheet_client()
+    if gc is None:
+        st.warning("Salvataggio su Google Sheets non disponibile (credenziali mancanti o non valide).")
+        return
+    sh=gc.open(SPREADSHEET_NAME)
     prof=st.session_state.get("current_profile","Default")
 
     ws_recipes=_get_or_create_ws(sh, _sheet_name_for("recipes",prof),
@@ -403,26 +447,32 @@ input[type="text"], input[type="number"], textarea, .st-af { border-radius: 10px
 _init_state()
 
 # =========================
+# Diagnostica (opzionale)
+# =========================
+with st.expander("🩺 Diagnostica (clicca per dettagli)", expanded=False):
+    ok_client = _get_sheet_client() is not None
+    st.write("Google Sheets client:", "✅ disponibile" if ok_client else "❌ non disponibile")
+    if not ok_client:
+        st.info("Streamlit Cloud → Settings → Secrets → sezione [gcp_service_account].")
+
+# =========================
 # SIDEBAR
 # =========================
 with st.sidebar:
     st.title(APP_TITLE)
 
-# ---- PROFILO (crea PRIMA, poi rendi il selectbox; pulizia input con flag) ----
+    # PROFILO: pulizia input PRIMA del widget, creazione profilo con rerun sicuro
     st.caption("Profilo")
 
-# (A) Se il run precedente ha richiesto di pulire il campo, fallo PRIMA di creare il widget
     if st.session_state.get("_clear_new_profile"):
-        st.session_state["new_profile_name"] = ""  # <-- lecito: avviene prima del widget
+        st.session_state["new_profile_name"] = ""
         del st.session_state["_clear_new_profile"]
 
-    np_c1, np_c2 = st.columns([2, 1])
+    np_c1, np_c2 = st.columns([2,1])
     with np_c1:
         new_profile_name = st.text_input(
-            "Nuovo profilo",
-            key="new_profile_name",
-            placeholder="Es. Famiglia",
-            label_visibility="collapsed",
+            "Nuovo profilo", key="new_profile_name",
+            placeholder="Es. Famiglia", label_visibility="collapsed"
         )
     with np_c2:
         if st.button("Crea"):
@@ -431,9 +481,8 @@ with st.sidebar:
                 if name not in st.session_state.profiles:
                     st.session_state.profiles.append(name)
                 st.session_state.current_profile = name
-                # (B) Chiedi di pulire l'input nel prossimo run, poi rerun
                 st.session_state["_clear_new_profile"] = True
-                st.experimental_rerun()
+                _rerun()
 
     st.selectbox(
         "Seleziona profilo",
@@ -452,8 +501,10 @@ with st.sidebar:
 
     st.divider()
     col_a, col_b = st.columns(2)
-    if col_a.button("💾 Salva"): save_to_sheets()
-    if col_b.button("📂 Carica"): load_from_sheets()
+    if col_a.button("💾 Salva"):
+        save_to_sheets()
+    if col_b.button("📂 Carica"):
+        load_from_sheets()
 
     st.divider()
     st.caption("Ricettario • Import/Export")
@@ -462,9 +513,11 @@ with st.sidebar:
         st.download_button("⬇️ Export JSON", export_recipes_json(), file_name="recipes.json", use_container_width=True)
     with c2:
         up = st.file_uploader("Import JSON", type=["json"], label_visibility="collapsed")
-        if up is not None: import_recipes_json(up.read())
+        if up is not None:
+            import_recipes_json(up.read())
     st.divider()
-    if st.button("🔍 Diagnostica Secrets"): _secrets_healthcheck()
+    if st.button("🔍 Diagnostica Secrets"):
+        _secrets_healthcheck()
 
 # Variabile locale sicura anche se ci sono rerun
 page = st.session_state.get("page", "Pianificatore settimanale")
@@ -535,7 +588,10 @@ elif page == "Ricette":
     # Anchor per scroll immediato al form dopo "Modifica"
     st.markdown('<div id="recipe_form_top"></div>', unsafe_allow_html=True)
     if st.session_state.get("scroll_to_form"):
-        components.html("<script>document.getElementById('recipe_form_top').scrollIntoView({behavior:'instant',block:'start'});</script>", height=0)
+        components.html(
+            "<script>document.getElementById('recipe_form_top').scrollIntoView({behavior:'instant',block:'start'});</script>",
+            height=0
+        )
         st.session_state.scroll_to_form=False
 
     # ---------- FORM (UNICO) ----------
@@ -610,7 +666,7 @@ elif page == "Ricette":
             st.session_state.recipe_form_mode="add"
             st.session_state.editing_recipe_id=None
             st.session_state.scroll_to_form=True
-            st.experimental_rerun()
+            _rerun()
 
         if cancel_btn:
             st.session_state.recipe_form_mode="add"
@@ -662,7 +718,7 @@ elif page == "Ricette":
                     st.session_state.recipe_form_mode="edit"
                     st.session_state.editing_recipe_id=r["id"]
                     st.session_state.scroll_to_form=True
-                    st.experimental_rerun()
+                    _rerun()
                 if b2.button("🗑️ Elimina", key=f"del_{r['id']}"):
                     st.session_state.recipes=[x for x in st.session_state.recipes if x["id"]!=r["id"]]
                     try: save_to_sheets()

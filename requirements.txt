@@ -6,3 +6,4 @@ oauth2client
 pandas
 streamlit-js-eval>=0.1.5
 requests>=2.31.0
+streamlit gspread google-auth requests xlsxwriter

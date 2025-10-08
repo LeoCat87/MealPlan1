@@ -558,48 +558,48 @@ with st.sidebar:
     st.title(APP_TITLE)
 
     # ---- PROFILO ----
-    st.caption("Profilo")
-    colp1, colp2 = st.columns([2, 1])
-    with colp1:
-        current_profile = st.selectbox(
-            "Seleziona profilo",
-            st.session_state.profiles,
-            index=st.session_state.profiles.index(st.session_state.current_profile) if st.session_state.current_profile in st.session_state.profiles else 0,
-            label_visibility="collapsed",
-            key="current_profile"
-        )
-    with colp2:
-        new_profile = st.text_input("Nuovo", value="", label_visibility="collapsed", placeholder="Nuovo profilo")
-        if new_profile.strip():
-            if new_profile not in st.session_state.profiles:
-                st.session_state.profiles.append(new_profile.strip())
-                st.session_state.current_profile = new_profile.strip()
-                st.toast(f"Profilo creato: {new_profile.strip()}")
-                st.experimental_rerun()
+    # ---- PROFILO (crea prima, poi rendi il selectbox) ----
+st.caption("Profilo")
 
-    st.divider()
-    pages = ["Pianificatore settimanale", "Ricette"]
-    if "page" in st.session_state and st.session_state.page not in pages:
-        st.session_state.page = "Pianificatore settimanale"
-    page = st.radio("Sezioni", pages, index=0, key="page")
-    st.divider()
-    col_a, col_b = st.columns(2)
-    if col_a.button("💾 Salva"):
-        save_to_sheets()
-    if col_b.button("📂 Carica"):
-        load_from_sheets()
-    st.divider()
-    st.caption("Ricettario • Import/Export")
-    c1, c2 = st.columns(2)
-    with c1:
-        st.download_button("⬇️ Export JSON", export_recipes_json(), file_name="recipes.json", use_container_width=True)
-    with c2:
-        up = st.file_uploader("Import JSON", type=["json"], label_visibility="collapsed")
-        if up is not None:
-            import_recipes_json(up.read())
-    st.divider()
-    if st.button("🔍 Diagnostica Secrets"):
-        _secrets_healthcheck()
+# 1) Input + bottone Crea (prima del selectbox)
+np_col1, np_col2 = st.columns([2, 1])
+with np_col1:
+    new_profile_name = st.text_input(
+        "Nuovo profilo",
+        key="new_profile_name",
+        placeholder="Es. Famiglia",
+        label_visibility="collapsed",
+    )
+with np_col2:
+    create_clicked = st.button("Crea")
+
+if create_clicked:
+    name = (new_profile_name or "").strip()
+    if name:
+        if "profiles" not in st.session_state:
+            st.session_state.profiles = ["Default"]
+        if name not in st.session_state.profiles:
+            st.session_state.profiles.append(name)
+        # IMPORTANTISSIMO: imposta lo stato PRIMA di disegnare il selectbox
+        st.session_state.current_profile = name
+        st.session_state.new_profile_name = ""  # pulisci input
+        st.experimental_rerun()
+
+# 2) Ora disegna il selectbox (dopo l’eventuale creazione)
+if "profiles" not in st.session_state:
+    st.session_state.profiles = ["Default"]
+if "current_profile" not in st.session_state:
+    st.session_state.current_profile = "Default"
+
+st.selectbox(
+    "Seleziona profilo",
+    st.session_state.profiles,
+    index=st.session_state.profiles.index(st.session_state.current_profile)
+          if st.session_state.current_profile in st.session_state.profiles else 0,
+    key="current_profile",
+    label_visibility="collapsed",
+)
+
 
 # -----------------------------
 # PIANIFICATORE

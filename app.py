@@ -102,19 +102,14 @@ def _normalize_private_key(pk: str) -> str:
     return pk
 
 def _get_sheet_client():
-    """
-    Safe: ritorna un client gspread, oppure None se i secrets mancano/non sono validi.
-    Evita crash all'avvio su Streamlit Cloud.
-    """
+    """Ritorna un client gspread o None se i secrets non ci sono/non sono validi."""
     try:
         info = dict(st.secrets["gcp_service_account"])
     except Exception:
         return None
     try:
         info["private_key"] = _normalize_private_key(info.get("private_key", ""))
-        creds = Credentials.from_service_account_info(
-            info, scopes=["https://www.googleapis.com/auth/spreadsheets"]
-        )
+        creds = Credentials.from_service_account_info(info, scopes=GSPREAD_SCOPES)
         return gspread.authorize(creds)
     except Exception:
         return None

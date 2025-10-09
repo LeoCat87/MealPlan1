@@ -465,10 +465,14 @@ _init_state()
 # Diagnostica (opzionale)
 # =========================
 with st.expander("🩺 Diagnostica (clicca per dettagli)", expanded=False):
-    ok_client = _get_sheet_client() is not None
-    st.write("Google Sheets client:", "✅ disponibile" if ok_client else "❌ non disponibile")
-    if not ok_client:
-        st.info("Streamlit Cloud → Settings → Secrets → sezione [gcp_service_account].")
+    client, err = _get_sheet_client_and_error()
+    if client:
+        st.write("Google Sheets client: ✅ disponibile")
+    else:
+        st.write("Google Sheets client: ❌ non disponibile")
+        if err:
+            st.warning(f"Motivo: {err}")
+        st.info("Controlla i secrets in Streamlit Cloud → Settings → Secrets, sezione [gcp_service_account].")
 
 # =========================
 # SIDEBAR

@@ -129,6 +129,10 @@ def _get_sheet_client_and_error():
     except Exception as e:
         return None, f"{type(e).__name__}: {e}"
 
+def _get_sheet_client():
+    client, _ = _get_sheet_client_and_error()
+    return client
+
 
 def _secrets_healthcheck():
     ok = _get_sheet_client() is not None

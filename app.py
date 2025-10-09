@@ -31,6 +31,50 @@ def _rerun():
     else:
         st.experimental_rerun()
 
+def delete_profile(profile: str):
+    """Elimina le worksheet del profilo dallo Sheet e lo rimuove dalla lista profili."""
+    if profile.strip().lower() == "default":
+        st.warning("Non è possibile eliminare il profilo Default.")
+        return
+
+    gc = _get_sheet_client()
+    if gc is None:
+        st.error("Impossibile connettersi a Google Sheets. Controlla i secrets.")
+        return
+
+    sh = gc.open(SPREADSHEET_NAME)
+    targets = [
+        _sheet_name_for("recipes", profile),
+        _sheet_name_for("planner_slots", profile),
+    ]
+    deleted = []
+    for title in targets:
+        try:
+            ws = sh.worksheet(title)
+            sh.del_worksheet(ws)
+            deleted.append(title)
+        except gspread.WorksheetNotFound:
+            # già assente: ok
+            pass
+        except Exception as e:
+            st.error(f"Errore eliminando '{title}': {e}")
+
+    # Rimuovi il profilo dalla lista in memoria
+    try:
+        st.session_state.profiles = [p for p in st.session_state.profiles if p != profile]
+    except Exception:
+        pass
+
+    # Se stavi usando proprio quel profilo, torna a Default e ricarica
+    if st.session_state.get("current_profile") == profile:
+        st.session_state.current_profile = "Default"
+        try:
+            load_from_sheets()
+        except Exception:
+            pass
+
+    st.success(f"Profilo '{profile}' eliminato. Schede rimosse: {', '.join(deleted) if deleted else 'nessuna trovata'}.")
+
 # =========================
 # IMMAGINI (download lato server)
 # =========================
@@ -554,7 +598,27 @@ with st.sidebar:
         label_visibility="collapsed",
         on_change=_on_profile_change,  # <-- auto-load al cambio profilo
     )
+    st.divider()
+st.caption("Gestione profili")
 
+# Mostra solo profili eliminabili
+deletable = [p for p in st.session_state.profiles if p.strip().lower() != "default"]
+if deletable:
+    colx, coly = st.columns([2,1])
+    with colx:
+        prof_to_delete = st.selectbox("Elimina profilo", deletable, key="delete_profile_select")
+    with coly:
+        confirm = st.text_input("Conferma", placeholder="Scrivi ELIMINA", label_visibility="collapsed", key="delete_profile_confirm")
+
+    if st.button("❌ Elimina profilo", use_container_width=True):
+        if (confirm or "").strip().upper() == "ELIMINA":
+            delete_profile(prof_to_delete)
+        else:
+            st.warning("Digita 'ELIMINA' nel campo di conferma per procedere.")
+else:
+    st.info("Nessun profilo eliminabile (solo 'Default' presente).")
+
+    
     st.divider()
     pages = ["Pianificatore settimanale", "Ricette"]
     if st.session_state.page not in pages:

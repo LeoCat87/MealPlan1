@@ -457,18 +457,20 @@ def load_from_sheets():
     st.success(f"✅ Dati caricati per profilo: {prof}")
 
 def save_to_sheets():
-    gc=_get_sheet_client()
+    gc = _get_sheet_client()
     if gc is None:
         st.warning("Salvataggio su Google Sheets non disponibile (credenziali mancanti o non valide).")
         return
-    sh=gc.open(SPREADSHEET_NAME)
-    prof=st.session_state.get("current_profile","Default")
 
-    ws_recipes=_get_or_create_ws(
-        sh, _sheet_name_for("recipes",prof),
+    sh = gc.open(SPREADSHEET_NAME)
+    prof = st.session_state.get("current_profile", "Default")
+
+    # ---- Ricette: come prima (va bene sovrascrivere tutto l'elenco ricette del profilo)
+    ws_recipes = _get_or_create_ws(
+        sh, _sheet_name_for("recipes", prof),
         ["id","name","category","time","servings","image","description","instructions","ingredients_json","favorite"]
     )
-    rows=[{
+    rows_recipes = [{
         "id": r["id"],
         "name": r.get("name",""),
         "category": r.get("category",""),
@@ -481,22 +483,49 @@ def save_to_sheets():
         "favorite": bool(r.get("favorite", False)),
     } for r in st.session_state.get("recipes", [])]
     ws_recipes.clear()
-    if rows: ws_recipes.update([list(rows[0].keys())] + [list(x.values()) for x in rows])
+    if rows_recipes:
+        ws_recipes.update([list(rows_recipes[0].keys())] + [list(x.values()) for x in rows_recipes])
 
-    ws_slots=_get_or_create_ws(sh, _sheet_name_for("planner_slots",prof), ["week_start","date","meal","recipe_id","servings"])
-    slots=[]
-    for d in st.session_state.get("planner",{}).get("days", []):
-        for meal,slot in d.items():
-            if meal=="date": continue
-            slots.append({
+    # ---- Planner: preserva LA STORIA
+    ws_slots = _get_or_create_ws(
+        sh, _sheet_name_for("planner_slots", prof),
+        ["week_start","date","meal","recipe_id","servings"]
+    )
+
+    # 1) leggi tutto l'esistente
+    existing = ws_slots.get_all_records()
+
+    # 2) calcola le 7 date della settimana corrente
+    wk_start = st.session_state.week_start
+    week_dates = {(wk_start + timedelta(days=i)).isoformat() for i in range(7)}
+
+    # 3) tieni tutto quello che NON appartiene alla settimana corrente
+    kept = [row for row in existing if str(row.get("date","")).strip() not in week_dates]
+
+    # 4) costruisci le righe nuove per la settimana corrente (dallo stato UI)
+    new_slots = []
+    for d in st.session_state.get("planner", {}).get("days", []):
+        the_date = d["date"]
+        for meal, slot in d.items():
+            if meal == "date": 
+                continue
+            new_slots.append({
                 "week_start": st.session_state.week_start.isoformat(),
-                "date": d["date"], "meal": meal,
-                "recipe_id": slot.get("recipe_id"), "servings": slot.get("servings",2)
+                "date": the_date,
+                "meal": meal,
+                "recipe_id": slot.get("recipe_id"),
+                "servings": slot.get("servings", 2),
             })
-    ws_slots.clear()
-    if slots: ws_slots.update([list(slots[0].keys())] + [list(x.values()) for x in slots])
 
-    st.toast(f"Dati salvati per profilo: {prof} ✓")
+    # 5) combina: vecchi (altre settimane) + nuovi (questa settimana)
+    combined = kept + new_slots
+
+    # 6) riscrivi il foglio una sola volta con tutto
+    ws_slots.clear()
+    if combined:
+        ws_slots.update([list(combined[0].keys())] + [list(x.values()) for x in combined])
+
+    st.toast(f"Dati salvati (storico preservato) per profilo: {prof} ✓")
 
 # =========================
 # UI BASE / STILI

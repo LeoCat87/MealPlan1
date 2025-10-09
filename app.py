@@ -101,18 +101,34 @@ def _normalize_private_key(pk: str) -> str:
         pk = "\n".join(lines)
     return pk
 
-def _get_sheet_client():
-    """Ritorna un client gspread o None se i secrets non ci sono/non sono validi."""
+def _get_sheet_client_and_error():
+    """Ritorna (client, error_string). client=None se fallisce."""
     try:
         info = dict(st.secrets["gcp_service_account"])
-    except Exception:
-        return None
+    except Exception as e:
+        return None, "Sezione [gcp_service_account] assente nei secrets."
+
     try:
-        info["private_key"] = _normalize_private_key(info.get("private_key", ""))
-        creds = Credentials.from_service_account_info(info, scopes=GSPREAD_SCOPES)
-        return gspread.authorize(creds)
-    except Exception:
-        return None
+        # Validazioni base utili
+        missing = [k for k in ["type","project_id","private_key_id","private_key","client_email","client_id","token_uri"] if k not in info]
+        if missing:
+            return None, f"Mancano campi nei secrets: {', '.join(missing)}"
+
+        pk = info.get("private_key","")
+        if not isinstance(pk, str) or "PRIVATE KEY" not in pk:
+            return None, "private_key non sembra una chiave PEM valida."
+
+        info["private_key"] = _normalize_private_key(pk)
+        creds = Credentials.from_service_account_info(
+            info,
+            scopes=[ "https://www.googleapis.com/auth/spreadsheets",
+                     "https://www.googleapis.com/auth/drive.readonly" ]  # ok anche se poi apri per ID
+        )
+        client = gspread.authorize(creds)
+        return client, None
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
+
 
 def _secrets_healthcheck():
     ok = _get_sheet_client() is not None

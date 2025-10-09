@@ -537,15 +537,15 @@ with st.sidebar:
     if col_b.button("📂 Carica"):
         load_from_sheets()
 
-    st.divider()
-    st.caption("Ricettario • Import/Export")
-    c1, c2 = st.columns(2)
-    with c1:
-        st.download_button("⬇️ Export JSON", export_recipes_json(), file_name="recipes.json", use_container_width=True)
-    with c2:
-        up = st.file_uploader("Import JSON", type=["json"], label_visibility="collapsed")
-        if up is not None:
-            import_recipes_json(up.read())
+    #st.divider()
+    #st.caption("Ricettario • Import/Export")
+    #c1, c2 = st.columns(2)
+    #with c1:
+    #    st.download_button("⬇️ Export JSON", export_recipes_json(), file_name="recipes.json", use_container_width=True)
+    #with c2:
+    #    up = st.file_uploader("Import JSON", type=["json"], label_visibility="collapsed")
+    #    if up is not None:
+    #        import_recipes_json(up.read())
     st.divider()
     if st.button("🔍 Diagnostica Secrets"):
         _secrets_healthcheck()

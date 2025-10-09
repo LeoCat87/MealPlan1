@@ -376,45 +376,56 @@ def _render_shopping_list_ui(embed: bool=True):
 # GOOGLE SHEETS: LOAD / SAVE (profilo) — SAFE (non crasha se credenziali mancanti)
 # =========================
 def load_from_sheets():
-    gc=_get_sheet_client()
+    gc = _get_sheet_client()
     if gc is None:
         st.warning("Caricamento da Google Sheets non disponibile (credenziali mancanti o non valide).")
         return
-    sh=gc.open(SPREADSHEET_NAME)
-    prof=st.session_state.get("current_profile","Default")
+    sh = gc.open(SPREADSHEET_NAME)
+    prof = st.session_state.get("current_profile","Default")
 
-    ws_recipes=_get_or_create_ws(sh, _sheet_name_for("recipes",prof),
-        ["id","name","category","time","servings","image","description","instructions","ingredients_json"])
-    rows=ws_recipes.get_all_records()
-    st.session_state.recipes=[]
+    # --- Ricette
+    ws_recipes = _get_or_create_ws(
+        sh, _sheet_name_for("recipes",prof),
+        ["id","name","category","time","servings","image","description","instructions","ingredients_json","favorite"]
+    )
+    rows = ws_recipes.get_all_records()
+    st.session_state.recipes = []
     for r in rows:
-        try: ings=json.loads(r.get("ingredients_json","[]"))
-        except Exception: ings=[]
+        try:
+            ings = json.loads(r.get("ingredients_json","[]"))
+        except Exception:
+            ings = []
         st.session_state.recipes.append({
             "id": _safe_int(r.get("id",0)) or _get_new_recipe_id(),
             "name": r.get("name",""), "category": r.get("category",""),
             "time": _safe_int(r.get("time",0)), "servings": _safe_int(r.get("servings",2)) or 2,
             "image": r.get("image",""), "description": r.get("description",""),
             "instructions": r.get("instructions",""), "ingredients": ings,
+            "favorite": bool(r.get("favorite", False)),
         })
 
-    ws_slots=_get_or_create_ws(sh, _sheet_name_for("planner_slots",prof),
+    # --- Planner: SOLO settimana corrente
+    ws_slots = _get_or_create_ws(sh, _sheet_name_for("planner_slots",prof),
         ["week_start","date","meal","recipe_id","servings"])
-    slots=ws_slots.get_all_records()
-    day_map={}
+    slots = ws_slots.get_all_records()
+
+    wk_start = st.session_state.week_start
+    planner = _empty_week(wk_start)
+    by_date = { (wk_start + timedelta(days=i)).isoformat(): i for i in range(7) }
+
     for s in slots:
-        d=str(s.get("date","")).strip(); m=str(s.get("meal","")).strip()
-        if not d or not m: continue
-        rid=_safe_int(s.get("recipe_id")) if str(s.get("recipe_id","")).strip() else None
-        serv=_safe_int(s.get("servings",2)) or 2
-        day_map.setdefault(d, {"date":d})
-        day_map[d][m]={"recipe_id":rid,"servings":serv}
-    planner={"start":None,"days":[]}
-    for d in sorted(day_map.keys()):
-        day={"date":d}
-        for m in MEALS: day[m]=day_map[d].get(m, {"recipe_id":None,"servings":2})
-        planner["days"].append(day)
-    st.session_state.planner=_normalize_planner_meal_keys(planner, MEALS)
+        d = str(s.get("date","")).strip()
+        if not d or d not in by_date:
+            continue
+        i = by_date[d]
+        meal = str(s.get("meal","")).strip()
+        if meal not in MEALS:
+            continue
+        rid = _safe_int(s.get("recipe_id")) if str(s.get("recipe_id","")).strip() else None
+        serv = _safe_int(s.get("servings",2)) or 2
+        planner["days"][i][meal] = {"recipe_id": rid, "servings": serv}
+
+    st.session_state.planner = planner
     st.success(f"✅ Dati caricati per profilo: {prof}")
 
 def save_to_sheets():
@@ -486,18 +497,34 @@ with st.expander("🩺 Diagnostica (clicca per dettagli)", expanded=False):
             st.warning(f"Motivo: {err}")
         st.info("Controlla i secrets in Streamlit Cloud → Settings → Secrets, sezione [gcp_service_account].")
 
+# bootstrap auto-load una sola volta
+if not st.session_state.get("_boot_loaded"):
+    try:
+        load_from_sheets()
+    except Exception as e:
+        st.info("Avvio con dati locali (nessun Google Sheet disponibile).")
+    st.session_state["_boot_loaded"] = True
+
 # =========================
 # SIDEBAR
 # =========================
 with st.sidebar:
     st.title(APP_TITLE)
 
-    # PROFILO: pulizia input PRIMA del widget, creazione profilo con rerun sicuro
+    # PROFILO
     st.caption("Profilo")
 
     if st.session_state.get("_clear_new_profile"):
         st.session_state["new_profile_name"] = ""
         del st.session_state["_clear_new_profile"]
+
+    def _on_profile_change():
+        # ricarica automaticamente i dati del profilo selezionato
+        try:
+            load_from_sheets()
+            st.toast("Profilo caricato ✓")
+        except Exception:
+            st.info("Caricamento automatico non disponibile (secrets mancanti?)")
 
     np_c1, np_c2 = st.columns([2,1])
     with np_c1:
@@ -512,6 +539,11 @@ with st.sidebar:
                 if name not in st.session_state.profiles:
                     st.session_state.profiles.append(name)
                 st.session_state.current_profile = name
+                # salva subito una base dati per il nuovo profilo
+                try:
+                    save_to_sheets()
+                except Exception:
+                    pass
                 st.session_state["_clear_new_profile"] = True
                 _rerun()
 
@@ -522,6 +554,7 @@ with st.sidebar:
               if st.session_state.current_profile in st.session_state.profiles else 0,
         key="current_profile",
         label_visibility="collapsed",
+        on_change=_on_profile_change,  # <-- auto-load al cambio profilo
     )
 
     st.divider()
@@ -530,22 +563,7 @@ with st.sidebar:
         st.session_state.page = "Pianificatore settimanale"
     st.radio("Sezioni", pages, index=pages.index(st.session_state.page), key="page")
 
-    st.divider()
-    col_a, col_b = st.columns(2)
-    if col_a.button("💾 Salva"):
-        save_to_sheets()
-    if col_b.button("📂 Carica"):
-        load_from_sheets()
-
-    #st.divider()
-    #st.caption("Ricettario • Import/Export")
-    #c1, c2 = st.columns(2)
-    #with c1:
-    #    st.download_button("⬇️ Export JSON", export_recipes_json(), file_name="recipes.json", use_container_width=True)
-    #with c2:
-    #    up = st.file_uploader("Import JSON", type=["json"], label_visibility="collapsed")
-    #    if up is not None:
-    #        import_recipes_json(up.read())
+    # RIMOSSI: Salva/Carica manuali e Import/Export JSON
     st.divider()
     if st.button("🔍 Diagnostica Secrets"):
         _secrets_healthcheck()

@@ -1,10 +1,11 @@
-# app.py — MealPlanner (profilo + autosave + immagini lato server) — versione completa e ottimizzata
+# app.py — MealPlanner (profilo + autosave + immagini lato server)
+# Versione: auto load/save per profilo, nessun pulsante manuale, cancellazione profili
 
 import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
 from io import BytesIO
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 from typing import List, Dict, Any
 import json
 import json as _json
@@ -31,52 +32,8 @@ def _rerun():
     else:
         st.experimental_rerun()
 
-def delete_profile(profile: str):
-    """Elimina le worksheet del profilo dallo Sheet e lo rimuove dalla lista profili."""
-    if profile.strip().lower() == "default":
-        st.warning("Non è possibile eliminare il profilo Default.")
-        return
-
-    gc = _get_sheet_client()
-    if gc is None:
-        st.error("Impossibile connettersi a Google Sheets. Controlla i secrets.")
-        return
-
-    sh = gc.open(SPREADSHEET_NAME)
-    targets = [
-        _sheet_name_for("recipes", profile),
-        _sheet_name_for("planner_slots", profile),
-    ]
-    deleted = []
-    for title in targets:
-        try:
-            ws = sh.worksheet(title)
-            sh.del_worksheet(ws)
-            deleted.append(title)
-        except gspread.WorksheetNotFound:
-            # già assente: ok
-            pass
-        except Exception as e:
-            st.error(f"Errore eliminando '{title}': {e}")
-
-    # Rimuovi il profilo dalla lista in memoria
-    try:
-        st.session_state.profiles = [p for p in st.session_state.profiles if p != profile]
-    except Exception:
-        pass
-
-    # Se stavi usando proprio quel profilo, torna a Default e ricarica
-    if st.session_state.get("current_profile") == profile:
-        st.session_state.current_profile = "Default"
-        try:
-            load_from_sheets()
-        except Exception:
-            pass
-
-    st.success(f"Profilo '{profile}' eliminato. Schede rimosse: {', '.join(deleted) if deleted else 'nessuna trovata'}.")
-
 # =========================
-# IMMAGINI (download lato server)
+# IMMAGINI (download lato server, con cache)
 # =========================
 def _resolve_image_url(u: str) -> str:
     if not u:
@@ -108,15 +65,20 @@ def _resolve_image_url(u: str) -> str:
 
     return u
 
+@st.cache_data(show_spinner=False, ttl=60*60*24)
 def _fetch_image_bytes(u: str) -> bytes | None:
     try:
         url = _resolve_image_url(u)
         if not url or not url.startswith("http"):
             return None
-        r = requests.get(url, headers={
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-        }, timeout=8)
+        r = requests.get(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+            },
+            timeout=8,
+        )
         r.raise_for_status()
         data = r.content
         return data if data and len(data) >= 32 else None
@@ -147,10 +109,14 @@ def _normalize_private_key(pk: str) -> str:
     lines = [ln.strip() for ln in pk.split("\n") if ln.strip()]
     if not lines or "BEGIN PRIVATE KEY-----" not in lines[0]:
         try:
-            s = next(i for i,l in enumerate(lines) if "BEGIN PRIVATE KEY" in l)
-            e = next(i for i,l in enumerate(lines) if "END PRIVATE KEY" in l)
-            body = [l for l in lines[s+1:e] if "PRIVATE KEY" not in l]
-            pk = "-----BEGIN PRIVATE KEY-----\n" + "\n".join(body) + "\n-----END PRIVATE KEY-----"
+            s = next(i for i, l in enumerate(lines) if "BEGIN PRIVATE KEY" in l)
+            e = next(i for i, l in enumerate(lines) if "END PRIVATE KEY" in l)
+            body = [l for l in lines[s + 1 : e] if "PRIVATE KEY" not in l]
+            pk = (
+                "-----BEGIN PRIVATE KEY-----\n"
+                + "\n".join(body)
+                + "\n-----END PRIVATE KEY-----"
+            )
         except StopIteration:
             pass
     else:
@@ -161,24 +127,29 @@ def _get_sheet_client_and_error():
     """Ritorna (client, error_string). client=None se fallisce."""
     try:
         info = dict(st.secrets["gcp_service_account"])
-    except Exception as e:
+    except Exception:
         return None, "Sezione [gcp_service_account] assente nei secrets."
 
     try:
-        # Validazioni base utili
-        missing = [k for k in ["type","project_id","private_key_id","private_key","client_email","client_id","token_uri"] if k not in info]
+        missing = [
+            k for k in [
+                "type","project_id","private_key_id","private_key","client_email","client_id","token_uri"
+            ] if k not in info
+        ]
         if missing:
             return None, f"Mancano campi nei secrets: {', '.join(missing)}"
 
-        pk = info.get("private_key","")
+        pk = info.get("private_key", "")
         if not isinstance(pk, str) or "PRIVATE KEY" not in pk:
             return None, "private_key non sembra una chiave PEM valida."
 
         info["private_key"] = _normalize_private_key(pk)
         creds = Credentials.from_service_account_info(
             info,
-            scopes=[ "https://www.googleapis.com/auth/spreadsheets",
-                     "https://www.googleapis.com/auth/drive.readonly" ]  # ok anche se poi apri per ID
+            scopes=[
+                "https://www.googleapis.com/auth/spreadsheets",
+                "https://www.googleapis.com/auth/drive.readonly",
+            ],
         )
         client = gspread.authorize(creds)
         return client, None
@@ -188,7 +159,6 @@ def _get_sheet_client_and_error():
 def _get_sheet_client():
     client, _ = _get_sheet_client_and_error()
     return client
-
 
 def _secrets_healthcheck():
     ok = _get_sheet_client() is not None
@@ -212,6 +182,46 @@ def _get_or_create_ws(sh, title: str, headers: list[str]):
         if headers:
             ws.update([headers])
     return ws
+
+def delete_profile(profile: str):
+    """Elimina le worksheet del profilo dallo Sheet e lo rimuove dalla lista profili."""
+    if profile.strip().lower() == "default":
+        st.warning("Non è possibile eliminare il profilo Default.")
+        return
+
+    gc = _get_sheet_client()
+    if gc is None:
+        st.error("Impossibile connettersi a Google Sheets. Controlla i secrets.")
+        return
+
+    sh = gc.open(SPREADSHEET_NAME)
+    targets = [
+        _sheet_name_for("recipes", profile),
+        _sheet_name_for("planner_slots", profile),
+    ]
+    deleted = []
+    for title in targets:
+        try:
+            ws = sh.worksheet(title)
+            sh.del_worksheet(ws)
+            deleted.append(title)
+        except gspread.WorksheetNotFound:
+            pass
+        except Exception as e:
+            st.error(f"Errore eliminando '{title}': {e}")
+
+    # Rimuovi il profilo dalla lista in memoria
+    st.session_state.profiles = [p for p in st.session_state.profiles if p != profile]
+
+    # Se era il profilo attivo, torna a Default e ricarica
+    if st.session_state.get("current_profile") == profile:
+        st.session_state.current_profile = "Default"
+        try:
+            load_from_sheets()
+        except Exception:
+            pass
+
+    st.success(f"Profilo '{profile}' eliminato. Schede rimosse: {', '.join(deleted) if deleted else 'nessuna trovata'}.")
 
 # =========================
 # UTIL / STATO
@@ -337,26 +347,6 @@ def _save_planner_if_changed(debounce_sec: float = 2.0):
             st.warning(f"Impossibile salvare: {e}")
 
 # =========================
-# EXPORT/IMPORT ricette (JSON)
-# =========================
-def export_recipes_json() -> bytes:
-    return json.dumps({"recipes": st.session_state.get("recipes", [])}, ensure_ascii=False, indent=2).encode("utf-8")
-
-def import_recipes_json(file_bytes: bytes):
-    try:
-        data=json.loads(file_bytes.decode("utf-8"))
-        incoming=data.get("recipes", [])
-        existing_ids={r.get("id") for r in st.session_state.get("recipes", []) if r.get("id") is not None}
-        def _new_id_local():
-            return max([r.get("id",0) for r in st.session_state.get("recipes", [])] + [0]) + 1
-        for r in incoming:
-            if "id" not in r or r["id"] in existing_ids: r["id"]=_new_id_local()
-        st.session_state.recipes=(st.session_state.get("recipes", []) or []) + incoming
-        st.success(f"Importate {len(incoming)} ricette.")
-    except Exception as e:
-        st.error(f"Import fallita: {e}")
-
-# =========================
 # LISTA SPESA (profilo + settimana)
 # =========================
 def _week_key():
@@ -417,28 +407,26 @@ def _render_shopping_list_ui(embed: bool=True):
     st.download_button("⬇️ Scarica (CSV)", df.to_csv(index=False).encode("utf-8"), "shopping_list.csv", use_container_width=True)
 
 # =========================
-# GOOGLE SHEETS: LOAD / SAVE (profilo) — SAFE (non crasha se credenziali mancanti)
+# GOOGLE SHEETS: LOAD / SAVE (profilo) — SAFE (no crash se credenziali mancanti)
 # =========================
 def load_from_sheets():
-    gc = _get_sheet_client()
+    gc=_get_sheet_client()
     if gc is None:
         st.warning("Caricamento da Google Sheets non disponibile (credenziali mancanti o non valide).")
         return
-    sh = gc.open(SPREADSHEET_NAME)
-    prof = st.session_state.get("current_profile","Default")
+    sh=gc.open(SPREADSHEET_NAME)
+    prof=st.session_state.get("current_profile","Default")
 
     # --- Ricette
-    ws_recipes = _get_or_create_ws(
+    ws_recipes=_get_or_create_ws(
         sh, _sheet_name_for("recipes",prof),
         ["id","name","category","time","servings","image","description","instructions","ingredients_json","favorite"]
     )
-    rows = ws_recipes.get_all_records()
-    st.session_state.recipes = []
+    rows=ws_recipes.get_all_records()
+    st.session_state.recipes=[]
     for r in rows:
-        try:
-            ings = json.loads(r.get("ingredients_json","[]"))
-        except Exception:
-            ings = []
+        try: ings=json.loads(r.get("ingredients_json","[]"))
+        except Exception: ings=[]
         st.session_state.recipes.append({
             "id": _safe_int(r.get("id",0)) or _get_new_recipe_id(),
             "name": r.get("name",""), "category": r.get("category",""),
@@ -449,27 +437,23 @@ def load_from_sheets():
         })
 
     # --- Planner: SOLO settimana corrente
-    ws_slots = _get_or_create_ws(sh, _sheet_name_for("planner_slots",prof),
-        ["week_start","date","meal","recipe_id","servings"])
-    slots = ws_slots.get_all_records()
-
-    wk_start = st.session_state.week_start
-    planner = _empty_week(wk_start)
-    by_date = { (wk_start + timedelta(days=i)).isoformat(): i for i in range(7) }
+    ws_slots=_get_or_create_ws(sh, _sheet_name_for("planner_slots",prof), ["week_start","date","meal","recipe_id","servings"])
+    slots=ws_slots.get_all_records()
+    wk_start=st.session_state.week_start
+    planner=_empty_week(wk_start)
+    by_date={(wk_start + timedelta(days=i)).isoformat(): i for i in range(7)}
 
     for s in slots:
-        d = str(s.get("date","")).strip()
-        if not d or d not in by_date:
-            continue
-        i = by_date[d]
-        meal = str(s.get("meal","")).strip()
-        if meal not in MEALS:
-            continue
-        rid = _safe_int(s.get("recipe_id")) if str(s.get("recipe_id","")).strip() else None
-        serv = _safe_int(s.get("servings",2)) or 2
-        planner["days"][i][meal] = {"recipe_id": rid, "servings": serv}
+        d=str(s.get("date","")).strip()
+        if not d or d not in by_date: continue
+        i=by_date[d]
+        meal=str(s.get("meal","")).strip()
+        if meal not in MEALS: continue
+        rid=_safe_int(s.get("recipe_id")) if str(s.get("recipe_id","")).strip() else None
+        serv=_safe_int(s.get("servings",2)) or 2
+        planner["days"][i][meal]={"recipe_id":rid,"servings":serv}
 
-    st.session_state.planner = planner
+    st.session_state.planner=planner
     st.success(f"✅ Dati caricati per profilo: {prof}")
 
 def save_to_sheets():
@@ -480,20 +464,26 @@ def save_to_sheets():
     sh=gc.open(SPREADSHEET_NAME)
     prof=st.session_state.get("current_profile","Default")
 
-    ws_recipes=_get_or_create_ws(sh, _sheet_name_for("recipes",prof),
-        ["id","name","category","time","servings","image","description","instructions","ingredients_json"])
+    ws_recipes=_get_or_create_ws(
+        sh, _sheet_name_for("recipes",prof),
+        ["id","name","category","time","servings","image","description","instructions","ingredients_json","favorite"]
+    )
     rows=[{
-        "id": r["id"], "name": r.get("name",""), "category": r.get("category",""),
-        "time": int(r.get("time",0) or 0), "servings": int(r.get("servings",2) or 2),
-        "image": r.get("image",""), "description": r.get("description",""),
+        "id": r["id"],
+        "name": r.get("name",""),
+        "category": r.get("category",""),
+        "time": int(r.get("time",0) or 0),
+        "servings": int(r.get("servings",2) or 2),
+        "image": r.get("image",""),
+        "description": r.get("description",""),
         "instructions": r.get("instructions",""),
         "ingredients_json": json.dumps(r.get("ingredients", []), ensure_ascii=False),
+        "favorite": bool(r.get("favorite", False)),
     } for r in st.session_state.get("recipes", [])]
     ws_recipes.clear()
     if rows: ws_recipes.update([list(rows[0].keys())] + [list(x.values()) for x in rows])
 
-    ws_slots=_get_or_create_ws(sh, _sheet_name_for("planner_slots",prof),
-        ["week_start","date","meal","recipe_id","servings"])
+    ws_slots=_get_or_create_ws(sh, _sheet_name_for("planner_slots",prof), ["week_start","date","meal","recipe_id","servings"])
     slots=[]
     for d in st.session_state.get("planner",{}).get("days", []):
         for meal,slot in d.items():
@@ -545,17 +535,16 @@ with st.expander("🩺 Diagnostica (clicca per dettagli)", expanded=False):
 if not st.session_state.get("_boot_loaded"):
     try:
         load_from_sheets()
-    except Exception as e:
+    except Exception:
         st.info("Avvio con dati locali (nessun Google Sheet disponibile).")
     st.session_state["_boot_loaded"] = True
 
 # =========================
-# SIDEBAR
+# SIDEBAR (auto, senza Salva/Carica/Import/Export)
 # =========================
 with st.sidebar:
     st.title(APP_TITLE)
 
-    # PROFILO
     st.caption("Profilo")
 
     if st.session_state.get("_clear_new_profile"):
@@ -591,41 +580,38 @@ with st.sidebar:
                 st.session_state["_clear_new_profile"] = True
                 _rerun()
 
+    # FIX: niente index=... per evitare conflitti con Session State
     st.selectbox(
         "Seleziona profilo",
         st.session_state.profiles,
         key="current_profile",
         label_visibility="collapsed",
-        on_change=_on_profile_change,  # <-- auto-load al cambio profilo
+        on_change=_on_profile_change,
     )
-    st.divider()
-st.caption("Gestione profili")
 
-# Mostra solo profili eliminabili
-deletable = [p for p in st.session_state.profiles if p.strip().lower() != "default"]
-if deletable:
-    colx, coly = st.columns([2,1])
-    with colx:
-        prof_to_delete = st.selectbox("Elimina profilo", deletable, key="delete_profile_select")
-    with coly:
-        confirm = st.text_input("Conferma", placeholder="Scrivi ELIMINA", label_visibility="collapsed", key="delete_profile_confirm")
-
-    if st.button("❌ Elimina profilo", use_container_width=True):
-        if (confirm or "").strip().upper() == "ELIMINA":
-            delete_profile(prof_to_delete)
-        else:
-            st.warning("Digita 'ELIMINA' nel campo di conferma per procedere.")
-else:
-    st.info("Nessun profilo eliminabile (solo 'Default' presente).")
-
-    
     st.divider()
     pages = ["Pianificatore settimanale", "Ricette"]
     if st.session_state.page not in pages:
         st.session_state.page = "Pianificatore settimanale"
     st.radio("Sezioni", pages, index=pages.index(st.session_state.page), key="page")
 
-    # RIMOSSI: Salva/Carica manuali e Import/Export JSON
+    st.divider()
+    st.caption("Gestione profili")
+    deletable = [p for p in st.session_state.profiles if p.strip().lower() != "default"]
+    if deletable:
+        colx, coly = st.columns([2,1])
+        with colx:
+            prof_to_delete = st.selectbox("Elimina profilo", deletable, key="delete_profile_select")
+        with coly:
+            confirm = st.text_input("Conferma", placeholder="Scrivi ELIMINA", label_visibility="collapsed", key="delete_profile_confirm")
+        if st.button("❌ Elimina profilo", use_container_width=True):
+            if (confirm or "").strip().upper() == "ELIMINA":
+                delete_profile(prof_to_delete)
+            else:
+                st.warning("Digita 'ELIMINA' nel campo di conferma per procedere.")
+    else:
+        st.info("Nessun profilo eliminabile (solo 'Default' presente).")
+
     st.divider()
     if st.button("🔍 Diagnostica Secrets"):
         _secrets_healthcheck()
@@ -643,11 +629,18 @@ if page == "Pianificatore settimanale":
     with nav[0]:
         if st.button("◀︎", use_container_width=True, key="nav_prev"):
             st.session_state.week_start -= timedelta(days=7)
-            st.session_state.planner = _empty_week(st.session_state.week_start)
+            # opzionale: ricarica dallo sheet la nuova settimana
+            try:
+                load_from_sheets()
+            except Exception:
+                st.session_state.planner = _empty_week(st.session_state.week_start)
     with nav[-1]:
         if st.button("▶︎", use_container_width=True, key="nav_next"):
             st.session_state.week_start += timedelta(days=7)
-            st.session_state.planner = _empty_week(st.session_state.week_start)
+            try:
+                load_from_sheets()
+            except Exception:
+                st.session_state.planner = _empty_week(st.session_state.week_start)
 
     st.caption(
         f"Settimana: {st.session_state.week_start.strftime('%d/%m/%Y')} - "
@@ -677,10 +670,7 @@ if page == "Pianificatore settimanale":
                     rec=_find_recipe(slot["recipe_id"])
                     if rec:
                         with st.expander("Dettagli", expanded=False):
-                            if rec.get("image"):
-                                img=_fetch_image_bytes(rec["image"])
-                                if rec.get("image"):
-                                    _render_image_from_url(rec["image"])
+                            _render_image_from_url(rec.get("image"))
                             st.caption(f"⏱ {rec['time']} min · Categoria: {rec.get('category','-')}")
                             st.write(rec.get("description",""))
                         slot["servings"] = st.number_input("Porzioni", 1, 12, value=slot.get("servings",2), key=serv_key)

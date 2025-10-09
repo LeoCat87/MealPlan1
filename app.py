@@ -79,6 +79,18 @@ def _fetch_image_bytes(u: str) -> bytes | None:
     except Exception:
         return None
 
+def _render_image_from_url(url: str):
+    """Scarica e mostra un'immagine; ritorna True se mostrata."""
+    if not url:
+        st.info("Immagine non disponibile.")
+        return False
+    img = _fetch_image_bytes(url)
+    if img:
+        st.image(img, use_container_width=True)
+        return True
+    st.info("Immagine non caricabile.")
+    return False
+
 # =========================
 # GOOGLE AUTH / SECRETS
 # =========================
@@ -587,7 +599,8 @@ if page == "Pianificatore settimanale":
                         with st.expander("Dettagli", expanded=False):
                             if rec.get("image"):
                                 img=_fetch_image_bytes(rec["image"])
-                                st.image(img, use_container_width=True) if img else st.info("Immagine non caricabile.")
+                                if rec.get("image"):
+                                    _render_image_from_url(rec["image"])
                             st.caption(f"⏱ {rec['time']} min · Categoria: {rec.get('category','-')}")
                             st.write(rec.get("description",""))
                         slot["servings"] = st.number_input("Porzioni", 1, 12, value=slot.get("servings",2), key=serv_key)
@@ -720,9 +733,7 @@ elif page == "Ricette":
         with st.container(border=True):
             c1,c2=st.columns([1,2])
             with c1:
-                if r.get("image"):
-                    img=_fetch_image_bytes(r["image"])
-                    st.image(img, use_container_width=True) if img else st.write("Nessuna anteprima")
+                _render_image_from_url(r.get("image"))
             with c2:
                 st.subheader(r["name"])
                 st.caption(f"Categoria: {r.get('category','-')} · ⏱ {r.get('time','-')} min · Porzioni base: {r.get('servings','-')}")

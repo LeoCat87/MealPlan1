@@ -550,8 +550,6 @@ with st.sidebar:
     st.selectbox(
         "Seleziona profilo",
         st.session_state.profiles,
-        index=st.session_state.profiles.index(st.session_state.current_profile)
-              if st.session_state.current_profile in st.session_state.profiles else 0,
         key="current_profile",
         label_visibility="collapsed",
         on_change=_on_profile_change,  # <-- auto-load al cambio profilo

@@ -63,14 +63,14 @@ def _safe_update(ws, rows: list[dict] | list[list]):
     ws.update("A1", values, value_input_option="RAW")
 
 # ===== ENV SWITCH =====
-ENV = st.secrets.get("env", "prod")  
+ENV = st.secrets.get("env", "prod")
 SPREADSHEET_NAME = "MealPlannerDB_prod" if ENV == "prod" else "MealPlannerDB_dev"
-if ENV == "dev":
-    st.sidebar.warning("🧪 AMBIENTE: DEV (usa dati di test)")
-    # mostra per default la diagnostica in dev
-    st.session_state.setdefault("_show_diag_default", True)
-else:
-    st.session_state.setdefault("_show_diag_default", False)
+
+# Solo un flag per dopo (non mostra ancora nulla)
+SHOW_ENV_BANNER = (ENV == "dev")
+
+# Imposta un flag interno
+st.session_state.setdefault("_show_diag_default", SHOW_ENV_BANNER)
 
 # =========================
 # CONFIG / COSTANTI
@@ -660,6 +660,10 @@ if not st.session_state.get("_boot_loaded"):
 # SIDEBAR (auto, senza Salva/Carica/Import/Export)
 # =========================
 with st.sidebar:
+    with st.sidebar:
+    if SHOW_ENV_BANNER:
+        st.warning("🧪 AMBIENTE: DEV (usa dati di test)")
+    st.caption(f"ENV: {ENV} · Sheet: {SPREADSHEET_NAME}")
     st.title(APP_TITLE)
 
     st.caption("Profilo")

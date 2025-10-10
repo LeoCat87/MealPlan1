@@ -12,6 +12,42 @@ import json as _json
 import time, hashlib, re, requests
 import gspread
 from google.oauth2.service_account import Credentials
+import gspread
+from gspread.exceptions import APIError
+
+def _gs_errmsg(e: Exception) -> str:
+    """Estrae un messaggio leggibile da APIError di gspread/Google."""
+    try:
+        if isinstance(e, APIError):
+            try:
+                j = e.response.json()
+                return j.get("error", {}).get("message") or e.response.text or str(e)
+            except Exception:
+                return getattr(e.response, "text", "") or str(e)
+        return str(e)
+    except Exception:
+        return str(e)
+
+def _safe_update(ws, rows: list[dict] | list[list]):
+    """
+    Aggiorna un worksheet scrivendo da A1 headers + righe.
+    Accetta:
+      - lista di dict (usa le key del primo come headers)
+      - lista di liste (prima sottolista = headers)
+    Ridimensiona prima per evitare errori di range.
+    """
+    if not rows:
+        ws.clear()
+        return
+    if isinstance(rows[0], dict):
+        headers = list(rows[0].keys())
+        values = [headers] + [[row.get(h, "") for h in headers] for row in rows]
+    else:
+        values = rows
+        headers = rows[0] if rows else []
+    # ridimensiona a (righe, colonne)
+    ws.resize(rows=len(values), cols=len(headers))
+    ws.update("A1", values, value_input_option="RAW")
 
 # ===== ENV SWITCH =====
 ENV = st.secrets.get("dev", "prod")  
@@ -474,67 +510,65 @@ def save_to_sheets():
     sh = gc.open(SPREADSHEET_NAME)
     prof = st.session_state.get("current_profile", "Default")
 
-    # ---- Ricette: come prima (va bene sovrascrivere tutto l'elenco ricette del profilo)
-    ws_recipes = _get_or_create_ws(
-        sh, _sheet_name_for("recipes", prof),
-        ["id","name","category","time","servings","image","description","instructions","ingredients_json","favorite"]
-    )
-    rows_recipes = [{
-        "id": r["id"],
-        "name": r.get("name",""),
-        "category": r.get("category",""),
-        "time": int(r.get("time",0) or 0),
-        "servings": int(r.get("servings",2) or 2),
-        "image": r.get("image",""),
-        "description": r.get("description",""),
-        "instructions": r.get("instructions",""),
-        "ingredients_json": json.dumps(r.get("ingredients", []), ensure_ascii=False),
-        "favorite": bool(r.get("favorite", False)),
-    } for r in st.session_state.get("recipes", [])]
-    ws_recipes.clear()
-    if rows_recipes:
-        ws_recipes.update([list(rows_recipes[0].keys())] + [list(x.values()) for x in rows_recipes])
+    try:
+        # ----- RICETTE (overwrite intero profilo)
+        ws_recipes = _get_or_create_ws(
+            sh, _sheet_name_for("recipes", prof),
+            ["id","name","category","time","servings","image","description","instructions","ingredients_json","favorite"]
+        )
+        rows_recipes = [{
+            "id": r["id"],
+            "name": r.get("name",""),
+            "category": r.get("category",""),
+            "time": int(r.get("time",0) or 0),
+            "servings": int(r.get("servings",2) or 2),
+            "image": r.get("image",""),
+            "description": r.get("description",""),
+            "instructions": r.get("instructions",""),
+            "ingredients_json": json.dumps(r.get("ingredients", []), ensure_ascii=False),
+            "favorite": bool(r.get("favorite", False)),
+        } for r in st.session_state.get("recipes", [])]
+        _safe_update(ws_recipes, rows_recipes)
 
-    # ---- Planner: preserva LA STORIA
-    ws_slots = _get_or_create_ws(
-        sh, _sheet_name_for("planner_slots", prof),
-        ["week_start","date","meal","recipe_id","servings"]
-    )
+        # ----- PLANNER (storico preservato: sostituisco solo la settimana corrente)
+        ws_slots = _get_or_create_ws(
+            sh, _sheet_name_for("planner_slots", prof),
+            ["week_start","date","meal","recipe_id","servings"]
+        )
 
-    # 1) leggi tutto l'esistente
-    existing = ws_slots.get_all_records()
+        existing = ws_slots.get_all_records()  # tutte le righe esistenti
+        wk_start = st.session_state.week_start
+        week_dates = {(wk_start + timedelta(days=i)).isoformat() for i in range(7)}
 
-    # 2) calcola le 7 date della settimana corrente
-    wk_start = st.session_state.week_start
-    week_dates = {(wk_start + timedelta(days=i)).isoformat() for i in range(7)}
+        # tengo tutto ciò che NON è nella settimana corrente
+        kept = [row for row in existing if str(row.get("date","")).strip() not in week_dates]
 
-    # 3) tieni tutto quello che NON appartiene alla settimana corrente
-    kept = [row for row in existing if str(row.get("date","")).strip() not in week_dates]
+        # righe nuove per la settimana corrente (dallo stato UI)
+        new_slots = []
+        for d in st.session_state.get("planner", {}).get("days", []):
+            the_date = d["date"]
+            for meal, slot in d.items():
+                if meal == "date":
+                    continue
+                new_slots.append({
+                    "week_start": st.session_state.week_start.isoformat(),
+                    "date": the_date,
+                    "meal": meal,
+                    "recipe_id": slot.get("recipe_id"),
+                    "servings": slot.get("servings", 2),
+                })
 
-    # 4) costruisci le righe nuove per la settimana corrente (dallo stato UI)
-    new_slots = []
-    for d in st.session_state.get("planner", {}).get("days", []):
-        the_date = d["date"]
-        for meal, slot in d.items():
-            if meal == "date": 
-                continue
-            new_slots.append({
-                "week_start": st.session_state.week_start.isoformat(),
-                "date": the_date,
-                "meal": meal,
-                "recipe_id": slot.get("recipe_id"),
-                "servings": slot.get("servings", 2),
-            })
+        combined = kept + new_slots
+        _safe_update(ws_slots, combined)
 
-    # 5) combina: vecchi (altre settimane) + nuovi (questa settimana)
-    combined = kept + new_slots
+        st.toast(f"Dati salvati (storico preservato) per profilo: {prof} ✓")
 
-    # 6) riscrivi il foglio una sola volta con tutto
-    ws_slots.clear()
-    if combined:
-        ws_slots.update([list(combined[0].keys())] + [list(x.values()) for x in combined])
-
-    st.toast(f"Dati salvati (storico preservato) per profilo: {prof} ✓")
+    except APIError as e:
+        st.error(f"Errore Google Sheets: {_gs_errmsg(e)}")
+        raise
+    except Exception as e:
+        st.error(f"Errore imprevisto nel salvataggio: {e}")
+        raise
 
 # =========================
 # UI BASE / STILI
@@ -568,6 +602,27 @@ with st.expander("🩺 Diagnostica (clicca per dettagli)", expanded=st.session_s
         if err:
             st.warning(f"Motivo: {err}")
         st.info("Controlla i secrets in Streamlit Cloud → Settings → Secrets, sezione [gcp_service_account].")
+st.divider()
+st.subheader("Test di connessione e scrittura")
+
+probe_col1, probe_col2 = st.columns(2)
+with probe_col1:
+    if st.button("▶️ Prova scrittura su Sheets"):
+        try:
+            _sheets_write_probe()
+            st.success("Scrittura OK — controlla lo sheet '_diagnostics' nel tuo Google Sheet.")
+        except APIError as e:
+            st.error(f"Google Sheets APIError: {_gs_errmsg(e)}")
+        except Exception as e:
+            st.error(f"Errore nella prova di scrittura: {e}")
+
+with probe_col2:
+    if st.button("🔄 Controlla credenziali ora"):
+        client, err = _get_sheet_client_and_error()
+        if client:
+            st.success("✅ Credenziali funzionanti.")
+        else:
+            st.error(f"❌ Credenziali non valide: {err or 'Errore sconosciuto.'}")
 
 # bootstrap auto-load una sola volta
 if not st.session_state.get("_boot_loaded"):
@@ -656,6 +711,17 @@ with st.sidebar:
 
 # Variabile locale sicura anche se ci sono rerun
 page = st.session_state.get("page", "Pianificatore settimanale")
+
+def _sheets_write_probe():
+    """Prova di scrittura: scrive un timestamp su un foglio _diagnostics."""
+    gc = _get_sheet_client()
+    if gc is None:
+        raise RuntimeError("Client Google Sheets non disponibile.")
+    sh = gc.open(SPREADSHEET_NAME)
+    ws = _get_or_create_ws(sh, "_diagnostics", ["ts","note"])
+    # uso append_row per test semplice
+    ws.append_row([time.strftime("%Y-%m-%d %H:%M:%S"), "probe write OK"], value_input_option="RAW")
+
 
 # =========================
 # PIANIFICATORE
@@ -797,8 +863,11 @@ elif page == "Ricette":
                 try:
                     save_to_sheets()
                     st.toast("Ricette salvate su Google Sheets ✓")
+                except APIError as e:
+                    st.error(f"Google Sheets APIError: {_gs_errmsg(e)}")
                 except Exception as e:
-                    st.warning(f"Salvataggio su Sheets non riuscito ora: {e}")
+                    st.error(f"Salvataggio non riuscito: {e}")
+
                 st.session_state.recipe_form_mode="add"
                 st.session_state.editing_recipe_id=None
 

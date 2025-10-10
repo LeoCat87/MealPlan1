@@ -660,7 +660,6 @@ if not st.session_state.get("_boot_loaded"):
 # SIDEBAR (auto, senza Salva/Carica/Import/Export)
 # =========================
 with st.sidebar:
-    with st.sidebar:
     if SHOW_ENV_BANNER:
         st.warning("🧪 AMBIENTE: DEV (usa dati di test)")
     st.caption(f"ENV: {ENV} · Sheet: {SPREADSHEET_NAME}")

@@ -28,6 +28,19 @@ def _gs_errmsg(e: Exception) -> str:
     except Exception:
         return str(e)
 
+def _gs_errmsg(e: Exception) -> str:
+    """Estrae un messaggio leggibile da APIError di gspread/Google."""
+    try:
+        if isinstance(e, APIError):
+            try:
+                j = e.response.json()
+                return j.get("error", {}).get("message") or e.response.text or str(e)
+            except Exception:
+                return getattr(e.response, "text", "") or str(e)
+        return str(e)
+    except Exception:
+        return str(e)
+
 def _safe_update(ws, rows: list[dict] | list[list]):
     """
     Aggiorna un worksheet scrivendo da A1 headers + righe.

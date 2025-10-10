@@ -13,6 +13,16 @@ import time, hashlib, re, requests
 import gspread
 from google.oauth2.service_account import Credentials
 
+# ===== ENV SWITCH =====
+ENV = st.secrets.get("dev", "prod")  
+SPREADSHEET_NAME = "MealPlannerDB_prod" if ENV == "prod" else "MealPlannerDB_dev"
+if ENV == "dev":
+    st.sidebar.warning("🧪 AMBIENTE: DEV (usa dati di test)")
+    # mostra per default la diagnostica in dev
+    st.session_state.setdefault("_show_diag_default", True)
+else:
+    st.session_state.setdefault("_show_diag_default", False)
+
 # =========================
 # CONFIG / COSTANTI
 # =========================
@@ -20,7 +30,6 @@ APP_TITLE = "MealPlanner"
 DAYS_LABELS = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"]
 MEALS = ["Pranzo", "Cena"]
 UNITS = ["g", "kg", "ml", "l", "pcs", "tbsp", "tsp"]
-SPREADSHEET_NAME = "MealPlannerDB"  # nome del Google Sheet
 
 # =========================
 # UTILITY: rerun compatibile
@@ -550,7 +559,7 @@ _init_state()
 # =========================
 # Diagnostica (opzionale)
 # =========================
-with st.expander("🩺 Diagnostica (clicca per dettagli)", expanded=False):
+with st.expander("🩺 Diagnostica (clicca per dettagli)", expanded=st.session_state.get("_show_diag_default", False)):
     client, err = _get_sheet_client_and_error()
     if client:
         st.write("Google Sheets client: ✅ disponibile")

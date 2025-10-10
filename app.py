@@ -1,4 +1,4 @@
-# app.py — MealPlanner (profilo + autosave + immagini lato server)
+v# app.py — MealPlanner (profilo + autosave + immagini lato server)
 # Versione: auto load/save per profilo, nessun pulsante manuale, cancellazione profili
 
 import streamlit as st
@@ -63,7 +63,7 @@ def _safe_update(ws, rows: list[dict] | list[list]):
     ws.update("A1", values, value_input_option="RAW")
 
 # ===== ENV SWITCH =====
-ENV = st.secrets.get("dev", "prod")  
+ENV = st.secrets.get("env", "prod")  
 SPREADSHEET_NAME = "MealPlannerDB_prod" if ENV == "prod" else "MealPlannerDB_dev"
 if ENV == "dev":
     st.sidebar.warning("🧪 AMBIENTE: DEV (usa dati di test)")

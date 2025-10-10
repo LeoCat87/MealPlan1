@@ -582,6 +582,17 @@ def save_to_sheets():
     except Exception as e:
         st.error(f"Errore imprevisto nel salvataggio: {e}")
         raise
+def _sheets_write_probe():
+    """Prova di scrittura: aggiunge una riga con timestamp in un foglio '_diagnostics'."""
+    gc = _get_sheet_client()
+    if gc is None:
+        raise RuntimeError("Client Google Sheets non disponibile (controlla i secrets).")
+    sh = gc.open(SPREADSHEET_NAME)
+    ws = _get_or_create_ws(sh, "_diagnostics", ["ts", "note"])
+    ws.append_row(
+        [time.strftime("%Y-%m-%d %H:%M:%S"), "probe write OK"],
+        value_input_option="RAW"
+    )
 
 # =========================
 # UI BASE / STILI

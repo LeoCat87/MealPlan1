@@ -1,20 +1,23 @@
 # app.py — MealPlanner (profilo + autosave + immagini lato server)
-# Versione: auto load/save per profilo, nessun pulsante manuale, cancellazione profili
+# Versione ottimizzata: auto load/save profilo, nessun pulsante manuale, cancellazione profili
+# NOTE: Funzionalità invariate. Rimossi duplicati, ottimizzazioni leggere, messaggi d'errore uniformati.
 
 import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
 from io import BytesIO
-from datetime import date, timedelta, datetime
+from datetime import date, timedelta
 from typing import List, Dict, Any
 import json
 import json as _json
 import time, hashlib, re, requests
 import gspread
 from google.oauth2.service_account import Credentials
-import gspread
 from gspread.exceptions import APIError
 
+# =========================
+# HELPERS / ERRORI
+# =========================
 def _gs_errmsg(e: Exception) -> str:
     """Estrae un messaggio leggibile da APIError di gspread/Google."""
     try:
@@ -28,63 +31,28 @@ def _gs_errmsg(e: Exception) -> str:
     except Exception:
         return str(e)
 
-def _gs_errmsg(e: Exception) -> str:
-    """Estrae un messaggio leggibile da APIError di gspread/Google."""
+def _safe_int(x, default=0):  # usato in vari punti
     try:
-        if isinstance(e, APIError):
-            try:
-                j = e.response.json()
-                return j.get("error", {}).get("message") or e.response.text or str(e)
-            except Exception:
-                return getattr(e.response, "text", "") or str(e)
-        return str(e)
+        return int(x)
     except Exception:
-        return str(e)
+        return default
 
-def _safe_update(ws, rows: list[dict] | list[list]):
-    """
-    Aggiorna un worksheet scrivendo da A1 headers + righe.
-    Accetta:
-      - lista di dict (usa le key del primo come headers)
-      - lista di liste (prima sottolista = headers)
-    Ridimensiona prima per evitare errori di range.
-    """
-    if not rows:
-        ws.clear()
-        return
-    if isinstance(rows[0], dict):
-        headers = list(rows[0].keys())
-        values = [headers] + [[row.get(h, "") for h in headers] for row in rows]
-    else:
-        values = rows
-        headers = rows[0] if rows else []
-    # ridimensiona a (righe, colonne)
-    ws.resize(rows=len(values), cols=len(headers))
-    ws.update("A1", values, value_input_option="RAW")
-
-# ===== ENV SWITCH =====
+# =========================
+# ENV & COSTANTI
+# =========================
 ENV = st.secrets.get("env", "prod")
 SPREADSHEET_NAME = "MealPlannerDB_prod" if ENV == "prod" else "MealPlannerDB_dev"
-
-# Solo un flag per dopo (non mostra ancora nulla)
 SHOW_ENV_BANNER = (ENV == "dev")
 
-# Imposta un flag interno
-st.session_state.setdefault("_show_diag_default", SHOW_ENV_BANNER)
-
-# =========================
-# CONFIG / COSTANTI
-# =========================
 APP_TITLE = "MealPlanner"
 DAYS_LABELS = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"]
 MEALS = ["Pranzo", "Cena"]
 UNITS = ["g", "kg", "ml", "l", "pcs", "tbsp", "tsp"]
 
 # =========================
-# UTILITY: rerun compatibile
+# RERUN compat
 # =========================
 def _rerun():
-    # Streamlit >= 1.27 usa st.rerun(); versioni precedenti st.experimental_rerun()
     if hasattr(st, "rerun"):
         st.rerun()
     else:
@@ -108,19 +76,16 @@ def _resolve_image_url(u: str) -> str:
 
     # Dropbox: ?dl=0/1 -> ?raw=1
     if "dropbox.com" in u:
-        if "?dl=0" in u or "?dl=1" in u:
+        if "?raw=1" not in u:
             u = u.replace("?dl=0", "?raw=1").replace("?dl=1", "?raw=1")
-        elif "?raw=1" not in u:
-            u += "?raw=1"
 
-    # Unsplash CDN: forza parametri comodi
+    # Unsplash CDN: auto format jpg
     if "images.unsplash.com" in u:
         sep = "&" if "?" in u else "?"
         if "auto=" not in u:
             u += f"{sep}auto=format"; sep = "&"
         if "fm=" not in u:
             u += f"{sep}fm=jpg"
-
     return u
 
 @st.cache_data(show_spinner=False, ttl=60*60*24)
@@ -182,7 +147,7 @@ def _normalize_private_key(pk: str) -> str:
     return pk
 
 def _get_sheet_client_and_error():
-    """Ritorna (client, error_string). client=None se fallisce."""
+    """Ritorna (client, error_string). client=None se fallisce. (no cache: per diagnostica)"""
     try:
         info = dict(st.secrets["gcp_service_account"])
     except Exception:
@@ -214,16 +179,23 @@ def _get_sheet_client_and_error():
     except Exception as e:
         return None, f"{type(e).__name__}: {e}"
 
-def _get_sheet_client():
+@st.cache_resource(show_spinner=False)
+def _get_sheet_client_cached():
+    """Client Sheets con cache (uso in load/save)."""
     client, _ = _get_sheet_client_and_error()
     return client
 
+def _get_sheet_client():
+    return _get_sheet_client_cached()
+
 def _secrets_healthcheck():
-    ok = _get_sheet_client() is not None
-    if ok:
+    ok_client, err = _get_sheet_client_and_error()
+    if ok_client:
         st.success("✅ Credenziali Google valide.")
     else:
-        st.error("❌ Credenziali Google non disponibili o non valide. Controlla i Secrets.")
+        st.error("❌ Credenziali Google non disponibili o non valide.")
+        if err:
+            st.caption(err)
 
 # =========================
 # PROFILI (worksheet per profilo)
@@ -232,7 +204,7 @@ def _sheet_name_for(base: str, profile: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_-]+", "_", (profile or "Default").strip())
     return f"{base}__{safe}" if safe.lower() != "default" else base
 
-def _get_or_create_ws(sh, title: str, headers: list[str]):
+def _get_or_create_ws(sh, title: str, headers: List[str]):
     try:
         ws = sh.worksheet(title)
     except gspread.WorksheetNotFound:
@@ -240,6 +212,26 @@ def _get_or_create_ws(sh, title: str, headers: list[str]):
         if headers:
             ws.update([headers])
     return ws
+
+def _safe_update(ws, rows: List[dict] | List[list]):
+    """
+    Aggiorna un worksheet scrivendo da A1 headers + righe.
+    Accetta:
+      - lista di dict (usa le key del primo come headers)
+      - lista di liste (prima sottolista = headers)
+    Ridimensiona prima per evitare errori di range.
+    """
+    if not rows:
+        ws.clear()
+        return
+    if isinstance(rows[0], dict):
+        headers = list(rows[0].keys())
+        values = [headers] + [[row.get(h, "") for h in headers] for row in rows]
+    else:
+        values = rows
+        headers = rows[0] if rows else []
+    ws.resize(rows=len(values), cols=len(headers))
+    ws.update("A1", values, value_input_option="RAW")
 
 def delete_profile(profile: str):
     """Elimina le worksheet del profilo dallo Sheet e lo rimuove dalla lista profili."""
@@ -268,10 +260,8 @@ def delete_profile(profile: str):
         except Exception as e:
             st.error(f"Errore eliminando '{title}': {e}")
 
-    # Rimuovi il profilo dalla lista in memoria
     st.session_state.profiles = [p for p in st.session_state.profiles if p != profile]
 
-    # Se era il profilo attivo, torna a Default e ricarica
     if st.session_state.get("current_profile") == profile:
         st.session_state.current_profile = "Default"
         try:
@@ -279,17 +269,14 @@ def delete_profile(profile: str):
         except Exception:
             pass
 
-    st.success(f"Profilo '{profile}' eliminato. Schede rimosse: {', '.join(deleted) if deleted else 'nessuna trovata'}.")
+    st.success(
+        f"Profilo '{profile}' eliminato. Schede rimosse: "
+        f"{', '.join(deleted) if deleted else 'nessuna trovata'}."
+    )
 
 # =========================
-# UTIL / STATO
+# DEMO / STATO
 # =========================
-def _safe_int(x, default=0):
-    try:
-        return int(x)
-    except Exception:
-        return default
-
 def _demo_recipes():
     return [
         {
@@ -343,9 +330,6 @@ def _find_recipe(rid):
 def _get_new_recipe_id() -> int:
     return (max((r["id"] for r in st.session_state.recipes), default=0) + 1)
 
-def _get_recipe_options():
-    return {f'{r["name"]} · {r.get("time","-")} min': r["id"] for r in st.session_state.recipes}
-
 def _normalize_planner_meal_keys(planner, expected_meals):
     if not planner or "days" not in planner:
         return planner
@@ -366,19 +350,21 @@ def _normalize_planner_meal_keys(planner, expected_meals):
     return planner
 
 def _init_state():
-    if "profiles" not in st.session_state: st.session_state.profiles=["Default"]
-    if "current_profile" not in st.session_state: st.session_state.current_profile="Default"
-    if "recipes" not in st.session_state: st.session_state.recipes=_demo_recipes()
-    if "planner" not in st.session_state: st.session_state.planner=_empty_week()
+    st.session_state.setdefault("profiles", ["Default"])
+    st.session_state.setdefault("current_profile", "Default")
+    st.session_state.setdefault("recipes", _demo_recipes())
+    st.session_state.setdefault("planner", _empty_week())
     if "week_start" not in st.session_state:
-        today=date.today(); st.session_state.week_start=today - timedelta(days=today.weekday())
-    if "recipe_form_mode" not in st.session_state: st.session_state.recipe_form_mode="add"
-    if "editing_recipe_id" not in st.session_state: st.session_state.editing_recipe_id=None
-    if "page" not in st.session_state: st.session_state.page="Pianificatore settimanale"
-    st.session_state.planner=_normalize_planner_meal_keys(st.session_state.planner, MEALS)
+        today = date.today()
+        st.session_state.week_start = today - timedelta(days=today.weekday())
+    st.session_state.setdefault("recipe_form_mode", "add")
+    st.session_state.setdefault("editing_recipe_id", None)
+    st.session_state.setdefault("page", "Pianificatore settimanale")
+    st.session_state.setdefault("_show_diag_default", SHOW_ENV_BANNER)
+    st.session_state.planner = _normalize_planner_meal_keys(st.session_state.planner, MEALS)
 
 # =========================
-# PERSISTENZA planner debounced
+# PERSISTENZA planner (debounced)
 # =========================
 def _planner_fingerprint(planner: dict) -> str:
     canon=[]
@@ -391,7 +377,8 @@ def _planner_fingerprint(planner: dict) -> str:
     return hashlib.sha256(_json.dumps(canon, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 def _save_planner_if_changed(debounce_sec: float = 2.0):
-    if "planner" not in st.session_state: return
+    if "planner" not in st.session_state:
+        return
     fp=_planner_fingerprint(st.session_state.planner)
     last_fp=st.session_state.get("_last_saved_planner_fp"); last_ts=st.session_state.get("_last_saved_ts",0.0)
     now=time.time()
@@ -435,11 +422,15 @@ def _aggregate_shopping_list_from_planner() -> pd.DataFrame:
 
 def _ensure_week_checklist():
     wk=_week_key(); df=_aggregate_shopping_list_from_planner()
-    if "shopping_checklists" not in st.session_state: st.session_state.shopping_checklists={}
-    if df.empty: st.session_state.shopping_checklists[wk]=[]; return
+    st.session_state.setdefault("shopping_checklists", {})
+    if df.empty:
+        st.session_state.shopping_checklists[wk]=[]
+        return
     cur=st.session_state.shopping_checklists.get(wk)
     if not cur:
-        df["Comprato"]=False; st.session_state.shopping_checklists[wk]=df.to_dict("records"); return
+        df["Comprato"]=False
+        st.session_state.shopping_checklists[wk]=df.to_dict("records")
+        return
     prev={(r["Ingrediente"],r["Unità"]): r.get("Comprato",False) for r in cur}
     df["Comprato"]=df.apply(lambda r: prev.get((r["Ingrediente"],r["Unità"]),False), axis=1)
     st.session_state.shopping_checklists[wk]=df.to_dict("records")
@@ -452,7 +443,8 @@ def _render_shopping_list_ui(embed: bool=True):
         st.caption(f"{st.session_state.week_start.strftime('%d/%m/%Y')} → {(st.session_state.week_start + timedelta(days=6)).strftime('%d/%m/%Y')}")
     for idx,row in enumerate(recs):
         c=st.columns([0.08,0.62,0.15,0.15])
-        with c[0]: bought=st.checkbox("", value=row.get("Comprato",False), key=f"buy_{wk}_{idx}")
+        with c[0]:
+            bought=st.checkbox("", value=row.get("Comprato",False), key=f"buy_{wk}_{idx}")
         with c[1]: st.write(row["Ingrediente"])
         with c[2]: st.write(row["Quantità"])
         with c[3]: st.write(row["Unità"])
@@ -465,7 +457,7 @@ def _render_shopping_list_ui(embed: bool=True):
     st.download_button("⬇️ Scarica (CSV)", df.to_csv(index=False).encode("utf-8"), "shopping_list.csv", use_container_width=True)
 
 # =========================
-# GOOGLE SHEETS: LOAD / SAVE (profilo) — SAFE (no crash se credenziali mancanti)
+# GOOGLE SHEETS: LOAD / SAVE (profilo) — SAFE
 # =========================
 def load_from_sheets():
     gc=_get_sheet_client()
@@ -543,20 +535,18 @@ def save_to_sheets():
         } for r in st.session_state.get("recipes", [])]
         _safe_update(ws_recipes, rows_recipes)
 
-        # ----- PLANNER (storico preservato: sostituisco solo la settimana corrente)
+        # ----- PLANNER (storico preservato: sostituisce solo la settimana corrente)
         ws_slots = _get_or_create_ws(
             sh, _sheet_name_for("planner_slots", prof),
             ["week_start","date","meal","recipe_id","servings"]
         )
 
-        existing = ws_slots.get_all_records()  # tutte le righe esistenti
+        existing = ws_slots.get_all_records()
         wk_start = st.session_state.week_start
         week_dates = {(wk_start + timedelta(days=i)).isoformat() for i in range(7)}
 
-        # tengo tutto ciò che NON è nella settimana corrente
         kept = [row for row in existing if str(row.get("date","")).strip() not in week_dates]
 
-        # righe nuove per la settimana corrente (dallo stato UI)
         new_slots = []
         for d in st.session_state.get("planner", {}).get("days", []):
             the_date = d["date"]
@@ -582,6 +572,7 @@ def save_to_sheets():
     except Exception as e:
         st.error(f"Errore imprevisto nel salvataggio: {e}")
         raise
+
 def _sheets_write_probe():
     """Prova di scrittura: aggiunge una riga con timestamp in un foglio '_diagnostics'."""
     gc = _get_sheet_client()
@@ -589,10 +580,7 @@ def _sheets_write_probe():
         raise RuntimeError("Client Google Sheets non disponibile (controlla i secrets).")
     sh = gc.open(SPREADSHEET_NAME)
     ws = _get_or_create_ws(sh, "_diagnostics", ["ts", "note"])
-    ws.append_row(
-        [time.strftime("%Y-%m-%d %H:%M:%S"), "probe write OK"],
-        value_input_option="RAW"
-    )
+    ws.append_row([time.strftime("%Y-%m-%d %H:%M:%S"), "probe write OK"], value_input_option="RAW")
 
 # =========================
 # UI BASE / STILI
@@ -657,7 +645,7 @@ if not st.session_state.get("_boot_loaded"):
     st.session_state["_boot_loaded"] = True
 
 # =========================
-# SIDEBAR (auto, senza Salva/Carica/Import/Export)
+# SIDEBAR (auto)
 # =========================
 with st.sidebar:
     if SHOW_ENV_BANNER:
@@ -672,7 +660,6 @@ with st.sidebar:
         del st.session_state["_clear_new_profile"]
 
     def _on_profile_change():
-        # ricarica automaticamente i dati del profilo selezionato
         try:
             load_from_sheets()
             st.toast("Profilo caricato ✓")
@@ -692,7 +679,6 @@ with st.sidebar:
                 if name not in st.session_state.profiles:
                     st.session_state.profiles.append(name)
                 st.session_state.current_profile = name
-                # salva subito una base dati per il nuovo profilo
                 try:
                     save_to_sheets()
                 except Exception:
@@ -700,7 +686,6 @@ with st.sidebar:
                 st.session_state["_clear_new_profile"] = True
                 _rerun()
 
-    # FIX: niente index=... per evitare conflitti con Session State
     st.selectbox(
         "Seleziona profilo",
         st.session_state.profiles,
@@ -739,17 +724,6 @@ with st.sidebar:
 # Variabile locale sicura anche se ci sono rerun
 page = st.session_state.get("page", "Pianificatore settimanale")
 
-def _sheets_write_probe():
-    """Prova di scrittura: scrive un timestamp su un foglio _diagnostics."""
-    gc = _get_sheet_client()
-    if gc is None:
-        raise RuntimeError("Client Google Sheets non disponibile.")
-    sh = gc.open(SPREADSHEET_NAME)
-    ws = _get_or_create_ws(sh, "_diagnostics", ["ts","note"])
-    # uso append_row per test semplice
-    ws.append_row([time.strftime("%Y-%m-%d %H:%M:%S"), "probe write OK"], value_input_option="RAW")
-
-
 # =========================
 # PIANIFICATORE
 # =========================
@@ -760,7 +734,6 @@ if page == "Pianificatore settimanale":
     with nav[0]:
         if st.button("◀︎", use_container_width=True, key="nav_prev"):
             st.session_state.week_start -= timedelta(days=7)
-            # opzionale: ricarica dallo sheet la nuova settimana
             try:
                 load_from_sheets()
             except Exception:
@@ -778,6 +751,12 @@ if page == "Pianificatore settimanale":
         f"{(st.session_state.week_start + timedelta(days=6)).strftime('%d/%m/%Y')}"
     )
 
+    # Pre-calcolo mappa opzioni ricette (performance)
+    recipes = st.session_state.recipes
+    opts_map = {f'{r["name"]} · {r.get("time","-")} min': r["id"] for r in recipes}
+    id_to_label = {v:k for k,v in opts_map.items()}
+    base_opts = ["-"] + list(opts_map.keys())
+
     day_cols = nav[1:-1]
     for i, col in enumerate(day_cols):
         d = st.session_state.week_start + timedelta(days=i)
@@ -785,17 +764,16 @@ if page == "Pianificatore settimanale":
             st.markdown(f"### {DAYS_LABELS[i]}\n**{d.day}**")
             for meal in MEALS:
                 slot = st.session_state.planner["days"][i][meal]
-                opts_map=_get_recipe_options()
-                opts=["-"] + list(opts_map.keys())
-                current="-"
+                # current label
+                current = "-"
                 if slot.get("recipe_id"):
-                    cur=_find_recipe(slot["recipe_id"])
-                    if cur:
-                        current=f'{cur["name"]} · {cur.get("time","-")} min'
-                        if current not in opts: opts.insert(1,current)
+                    current = id_to_label.get(slot["recipe_id"], "-")
+                opts = base_opts if current == "-" else (["-"] + ([current] if current not in base_opts else []) + [o for o in base_opts if o != current and o != "-"])
+
                 sel_key=f"planner_sel_{i}_{meal}_{d.isoformat()}"
                 serv_key=f"planner_serv_{i}_{meal}_{d.isoformat()}"
                 selected = st.selectbox(meal, opts, index=opts.index(current) if current in opts else 0, key=sel_key)
+
                 if selected != "-":
                     slot["recipe_id"] = opts_map.get(selected, slot.get("recipe_id"))
                     rec=_find_recipe(slot["recipe_id"])

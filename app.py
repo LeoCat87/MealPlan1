@@ -1,4 +1,4 @@
-v# app.py — MealPlanner (profilo + autosave + immagini lato server)
+# app.py — MealPlanner (profilo + autosave + immagini lato server)
 # Versione: auto load/save per profilo, nessun pulsante manuale, cancellazione profili
 
 import streamlit as st

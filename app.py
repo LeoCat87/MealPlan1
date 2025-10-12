@@ -441,20 +441,32 @@ def _render_shopping_list_ui(embed: bool=True):
     if embed:
         st.subheader("🧾 Lista della spesa — settimana corrente")
         st.caption(f"{st.session_state.week_start.strftime('%d/%m/%Y')} → {(st.session_state.week_start + timedelta(days=6)).strftime('%d/%m/%Y')}")
-    for idx,row in enumerate(recs):
-        c=st.columns([0.08,0.62,0.15,0.15])
+    for idx, row in enumerate(recs):
+    # card con bordo e checkbox più facile da toccare
+    with st.container(border=True):
+        cols = [0.18, 0.52, 0.15, 0.15] if st.session_state.get("is_mobile") else [0.14, 0.56, 0.15, 0.15]
+        c = st.columns(cols)
         with c[0]:
-            bought=st.checkbox("", value=row.get("Comprato",False), key=f"buy_{wk}_{idx}")
-        with c[1]: st.write(row["Ingrediente"])
-        with c[2]: st.write(row["Quantità"])
-        with c[3]: st.write(row["Unità"])
-        recs[idx]["Comprato"]=bought
+            bought = st.checkbox(" ", value=row.get("Comprato", False), key=f"buy_{wk}_{idx}")
+        with c[1]:
+            st.write(f"**{row['Ingrediente']}**")
+        with c[2]:
+            st.write(row["Quantità"])
+        with c[3]:
+            st.write(row["Unità"])
+        recs[idx]["Comprato"] = bought
+
     df=pd.DataFrame(recs)
     buf=BytesIO()
     with pd.ExcelWriter(buf, engine="xlsxwriter") as w:
         df.to_excel(w, index=False, sheet_name="ShoppingList")
-    st.download_button("⬇️ Scarica (Excel)", buf.getvalue(), "shopping_list.xlsx", use_container_width=True)
-    st.download_button("⬇️ Scarica (CSV)", df.to_csv(index=False).encode("utf-8"), "shopping_list.csv", use_container_width=True)
+    st.markdown('<div class="sticky-bottom">', unsafe_allow_html=True)
+    col_dl1, col_dl2 = st.columns(2)
+    with col_dl1:
+        st.download_button("⬇️ Excel", buf.getvalue(), "shopping_list.xlsx", use_container_width=True)
+    with col_dl2:
+        st.download_button("⬇️ CSV", df.to_csv(index=False).encode("utf-8"), "shopping_list.csv", use_container_width=True)
+    st.markdown('</div>', unsafe_allow_html=True)
 
 # =========================
 # GOOGLE SHEETS: LOAD / SAVE (profilo) — SAFE
@@ -599,6 +611,57 @@ input[type="text"], input[type="number"], textarea, .st-af { border-radius: 10px
 @media (max-width: 640px){ .stButton>button, .stDownloadButton>button { width: 100%; } }
 </style>
 """, unsafe_allow_html=True)
+# --- Mobile mode (toggle) + CSS mobile-first
+if "is_mobile" not in st.session_state:
+    st.session_state.is_mobile = False  # puoi metterlo True se pubblichi solo per smartphone
+
+with st.sidebar:
+    st.toggle("📱 Modalità mobile", key="is_mobile", help="Usa layout verticale, bottoni più grandi, meno scroll")
+
+st.markdown("""
+<style>
+/* spacing generali */
+.block-container { padding-top: .6rem; padding-bottom: 1.2rem; }
+
+/* sidebar più stretta su mobile */
+@media (max-width: 768px){
+  section[data-testid="stSidebar"] { width: 280px !important; min-width: 280px !important; }
+}
+
+/* header trasparente già presente */
+[data-testid="stHeader"] { background: transparent; }
+
+/* pulsanti e select: touch-friendly */
+div.stButton > button, div.stDownloadButton > button, a[kind="link"] {
+  border-radius: 12px; padding: .8rem 1rem; font-weight: 600; border: 1px solid rgba(255,255,255,0.12);
+}
+div[data-baseweb="select"] > div { border-radius: 12px !important; min-height: 48px; }
+input[type="text"], input[type="number"], textarea, .st-af { border-radius: 12px !important; }
+
+/* immagini: rapporto costante e taglio per ridurre altezza */
+.stImage > img { object-fit: cover; width: 100%; max-height: 220px; border-radius: 12px; }
+
+/* card compatte su mobile */
+@media (max-width: 768px){
+  .st-emotion-cache-ue6h4q, .st-emotion-cache-azul3c { padding: .6rem !important; } /* container border */
+  h1, h2, h3 { line-height: 1.2; }
+  .stMarkdown p { margin-bottom: .3rem; }
+  .st-expanderContent { padding-top: .4rem; padding-bottom: .4rem; }
+}
+
+/* top navigator sticky */
+#weekbar { position: sticky; top: 0; z-index: 20; backdrop-filter: blur(6px); padding: .4rem 0; }
+
+/* bottom actions sticky su mobile (download lista ecc.) */
+@media (max-width: 768px){
+  .sticky-bottom {
+    position: sticky; bottom: 0; z-index: 25; padding: .5rem 0 .3rem 0;
+    background: linear-gradient(180deg, transparent, rgba(0,0,0,.10));
+  }
+  .sticky-bottom > div > button { width: 100% !important; }
+}
+</style>
+""", unsafe_allow_html=True)
 
 _init_state()
 
@@ -730,64 +793,96 @@ page = st.session_state.get("page", "Pianificatore settimanale")
 if page == "Pianificatore settimanale":
     st.header("Pianificatore settimanale")
 
-    nav = st.columns([0.5,1,1,1,1,1,1,1,0.5])
-    with nav[0]:
+    # --- barra settimana sticky (sempre comoda su mobile)
+    st.markdown('<div id="weekbar"></div>', unsafe_allow_html=True)
+    nb = st.columns([1, 3, 1])
+    with nb[0]:
         if st.button("◀︎", use_container_width=True, key="nav_prev"):
             st.session_state.week_start -= timedelta(days=7)
-            try:
-                load_from_sheets()
-            except Exception:
-                st.session_state.planner = _empty_week(st.session_state.week_start)
-    with nav[-1]:
+            try: load_from_sheets()
+            except Exception: st.session_state.planner = _empty_week(st.session_state.week_start)
+    with nb[1]:
+        st.caption(
+            f"Settimana: {st.session_state.week_start.strftime('%d/%m/%Y')} - "
+            f"{(st.session_state.week_start + timedelta(days=6)).strftime('%d/%m/%Y')}"
+        )
+    with nb[2]:
         if st.button("▶︎", use_container_width=True, key="nav_next"):
             st.session_state.week_start += timedelta(days=7)
-            try:
-                load_from_sheets()
-            except Exception:
-                st.session_state.planner = _empty_week(st.session_state.week_start)
+            try: load_from_sheets()
+            except Exception: st.session_state.planner = _empty_week(st.session_state.week_start)
 
-    st.caption(
-        f"Settimana: {st.session_state.week_start.strftime('%d/%m/%Y')} - "
-        f"{(st.session_state.week_start + timedelta(days=6)).strftime('%d/%m/%Y')}"
-    )
-
-    # Pre-calcolo mappa opzioni ricette (performance)
+    # Precalcolo opzioni ricette (come prima)
     recipes = st.session_state.recipes
     opts_map = {f'{r["name"]} · {r.get("time","-")} min': r["id"] for r in recipes}
     id_to_label = {v:k for k,v in opts_map.items()}
     base_opts = ["-"] + list(opts_map.keys())
 
-    day_cols = nav[1:-1]
-    for i, col in enumerate(day_cols):
-        d = st.session_state.week_start + timedelta(days=i)
-        with col:
-            st.markdown(f"### {DAYS_LABELS[i]}\n**{d.day}**")
+    # --- DESKTOP: 7 colonne come già facevi
+    if not st.session_state.is_mobile:
+        day_cols = st.columns([0.5,1,1,1,1,1,1,1,0.5])[1:-1]
+        for i, col in enumerate(day_cols):
+            d = st.session_state.week_start + timedelta(days=i)
+            with col:
+                st.markdown(f"### {DAYS_LABELS[i]}\n**{d.day}**")
+                for meal in MEALS:
+                    slot = st.session_state.planner["days"][i][meal]
+                    current = "-" if not slot.get("recipe_id") else id_to_label.get(slot["recipe_id"], "-")
+                    opts = base_opts if current == "-" else (["-"] + ([current] if current not in base_opts else []) + [o for o in base_opts if o != current and o != "-"])
+                    sel_key=f"planner_sel_{i}_{meal}_{d.isoformat()}"
+                    serv_key=f"planner_serv_{i}_{meal}_{d.isoformat()}"
+                    selected = st.selectbox(meal, opts, index=opts.index(current) if current in opts else 0, key=sel_key, label_visibility="visible")
+                    if selected != "-":
+                        slot["recipe_id"] = opts_map.get(selected, slot.get("recipe_id"))
+                        rec=_find_recipe(slot["recipe_id"])
+                        if rec:
+                            with st.expander("Dettagli", expanded=False):
+                                _render_image_from_url(rec.get("image"))
+                                st.caption(f"⏱ {rec['time']} min · Categoria: {rec.get('category','-')}")
+                                st.write(rec.get("description",""))
+                            slot["servings"] = st.number_input("Porzioni", 1, 12, value=slot.get("servings",2), key=serv_key)
+                    else:
+                        slot["recipe_id"]=None
+
+    # --- MOBILE: lista verticale per giorno con accordion compatti
+    else:
+        for i in range(7):
+            d = st.session_state.week_start + timedelta(days=i)
+            st.markdown(f"### {DAYS_LABELS[i]} · **{d.day}**")
             for meal in MEALS:
                 slot = st.session_state.planner["days"][i][meal]
-                # current label
-                current = "-"
-                if slot.get("recipe_id"):
-                    current = id_to_label.get(slot["recipe_id"], "-")
+                current = "-" if not slot.get("recipe_id") else id_to_label.get(slot["recipe_id"], "-")
                 opts = base_opts if current == "-" else (["-"] + ([current] if current not in base_opts else []) + [o for o in base_opts if o != current and o != "-"])
+                sel_key=f"m_planner_sel_{i}_{meal}_{d.isoformat()}"
+                serv_key=f"m_planner_serv_{i}_{meal}_{d.isoformat()}"
 
-                sel_key=f"planner_sel_{i}_{meal}_{d.isoformat()}"
-                serv_key=f"planner_serv_{i}_{meal}_{d.isoformat()}"
-                selected = st.selectbox(meal, opts, index=opts.index(current) if current in opts else 0, key=sel_key)
+                # riga compatta: titolo pasto + select + stepper porzioni in linea
+                c1, c2 = st.columns([2, 1])
+                with c1:
+                    selected = st.selectbox(
+                        f"{meal}", opts, index=opts.index(current) if current in opts else 0,
+                        key=sel_key, label_visibility="visible"
+                    )
+                with c2:
+                    slot["servings"] = st.number_input("Porz.", 1, 12, value=slot.get("servings",2), key=serv_key, label_visibility="visible")
 
                 if selected != "-":
                     slot["recipe_id"] = opts_map.get(selected, slot.get("recipe_id"))
-                    rec=_find_recipe(slot["recipe_id"])
+                    rec = _find_recipe(slot["recipe_id"])
                     if rec:
-                        with st.expander("Dettagli", expanded=False):
+                        with st.expander("Dettagli ricetta"):
                             _render_image_from_url(rec.get("image"))
                             st.caption(f"⏱ {rec['time']} min · Categoria: {rec.get('category','-')}")
-                            st.write(rec.get("description",""))
-                        slot["servings"] = st.number_input("Porzioni", 1, 12, value=slot.get("servings",2), key=serv_key)
+                            if rec.get("description"): st.write(rec.get("description"))
                 else:
-                    slot["recipe_id"]=None
+                    slot["recipe_id"] = None
+
+            st.divider()
 
     _save_planner_if_changed()
-    with st.expander("Lista della spesa (settimana corrente)", expanded=True):
+
+    # Lista spesa: su mobile chiusa di default + azioni sticky in basso
+    with st.expander("🧾 Lista della spesa (settimana corrente)", expanded=not st.session_state.is_mobile):
         _render_shopping_list_ui(embed=False)
 
 # =========================
@@ -827,18 +922,24 @@ elif page == "Ricette":
         image = st.text_input("URL immagine (opzionale)", value=editing.get("image","") if editing else "")
         description = st.text_area("Descrizione", value=editing.get("description","") if editing else "")
 
-        st.markdown("**Ingredienti**")
-        defaults = editing.get("ingredients", []) if editing else []
-        ingr_count = st.number_input("Numero ingredienti", 0, 50, value=len(defaults) if defaults else 5, key=f"{cur_prefix}_ing_count")
-
-        ingredients: List[Dict[str, Any]] = []
-        for idx in range(int(ingr_count)):
-            c1,c2,c3=st.columns([3,1,1])
-            d = defaults[idx] if idx < len(defaults) else {"name":"","qty":0,"unit":UNITS[0]}
-            name_i = c1.text_input(f"Ingrediente {idx+1} - nome", value=d.get("name",""), key=f"{cur_prefix}_ing_name_{idx}")
-            qty_i = c2.number_input(f"Quantità {idx+1}", min_value=0.0, value=float(d.get("qty",0)), key=f"{cur_prefix}_ing_qty_{idx}")
-            unit_i = c3.selectbox(f"Unità {idx+1}", UNITS, index=(UNITS.index(d.get("unit")) if d.get("unit") in UNITS else 0), key=f"{cur_prefix}_ing_unit_{idx}")
-            if name_i: ingredients.append({"name":name_i,"qty":qty_i,"unit":unit_i})
+        exp_label = "Ingredienti (tocca per aprire)" if st.session_state.is_mobile else "Ingredienti"
+        with st.expander(exp_label, expanded=not st.session_state.is_mobile):
+            defaults = editing.get("ingredients", []) if editing else []
+            ingr_count = st.number_input(
+                "Numero ingredienti", 0, 50,
+                value=len(defaults) if defaults else 5,
+                key=f"{cur_prefix}_ing_count"
+            )
+        
+            ingredients: List[Dict[str, Any]] = []
+            for idx in range(int(ingr_count)):
+                c1, c2, c3 = st.columns([3, 1, 1])
+                d = defaults[idx] if idx < len(defaults) else {"name": "", "qty": 0, "unit": UNITS[0]}
+                name_i = c1.text_input(f"Ingrediente {idx+1} - nome", value=d.get("name",""), key=f"{cur_prefix}_ing_name_{idx}")
+                qty_i = c2.number_input(f"Quantità {idx+1}", min_value=0.0, value=float(d.get("qty",0)), key=f"{cur_prefix}_ing_qty_{idx}")
+                unit_i = c3.selectbox(f"Unità {idx+1}", UNITS, index=(UNITS.index(d.get("unit")) if d.get("unit") in UNITS else 0), key=f"{cur_prefix}_ing_unit_{idx}")
+                if name_i:
+                    ingredients.append({"name": name_i, "qty": qty_i, "unit": unit_i})
 
         instructions = st.text_area("Istruzioni", value=editing.get("instructions","") if editing else "", key=f"{cur_prefix}_instructions")
 
@@ -920,11 +1021,15 @@ elif page == "Ricette":
                 st.subheader(r["name"])
                 st.caption(f"Categoria: {r.get('category','-')} · ⏱ {r.get('time','-')} min · Porzioni base: {r.get('servings','-')}")
                 if r.get("description"): st.write(r["description"])
-                with st.expander("Ingredienti"):
-                    df=pd.DataFrame(r.get("ingredients", []))
-                    if not df.empty: st.dataframe(df, hide_index=True, use_container_width=True)
+                with st.expander("Ingredienti", expanded=not st.session_state.is_mobile):
+                    df = pd.DataFrame(r.get("ingredients", []))
+                    if not df.empty:
+                        st.dataframe(df, hide_index=True, use_container_width=True)
+                
                 if r.get("instructions"):
-                    with st.expander("Istruzioni"): st.write(r["instructions"])
+                    with st.expander("Istruzioni", expanded=False):
+                        st.write(r["instructions"])
+
                 b1,b2=st.columns(2)
                 if b1.button("✏️ Modifica", key=f"edit_{r['id']}"):
                     st.session_state.recipe_form_mode="edit"

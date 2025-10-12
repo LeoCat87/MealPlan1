@@ -443,18 +443,18 @@ def _render_shopping_list_ui(embed: bool=True):
         st.caption(f"{st.session_state.week_start.strftime('%d/%m/%Y')} → {(st.session_state.week_start + timedelta(days=6)).strftime('%d/%m/%Y')}")
     for idx, row in enumerate(recs):
     # card con bordo e checkbox più facile da toccare
-    with st.container(border=True):
-        cols = [0.18, 0.52, 0.15, 0.15] if st.session_state.get("is_mobile") else [0.14, 0.56, 0.15, 0.15]
-        c = st.columns(cols)
-        with c[0]:
-            bought = st.checkbox(" ", value=row.get("Comprato", False), key=f"buy_{wk}_{idx}")
-        with c[1]:
-            st.write(f"**{row['Ingrediente']}**")
-        with c[2]:
-            st.write(row["Quantità"])
-        with c[3]:
-            st.write(row["Unità"])
-        recs[idx]["Comprato"] = bought
+        with st.container(border=True):
+            cols = [0.18, 0.52, 0.15, 0.15] if st.session_state.get("is_mobile") else [0.14, 0.56, 0.15, 0.15]
+            c = st.columns(cols)
+            with c[0]:
+                bought = st.checkbox(" ", value=row.get("Comprato", False), key=f"buy_{wk}_{idx}")
+            with c[1]:
+                st.write(f"**{row['Ingrediente']}**")
+            with c[2]:
+                st.write(row["Quantità"])
+            with c[3]:
+                st.write(row["Unità"])
+            recs[idx]["Comprato"] = bought
 
     df=pd.DataFrame(recs)
     buf=BytesIO()

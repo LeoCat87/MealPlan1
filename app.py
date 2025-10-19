@@ -1,6 +1,15 @@
 # app.py — MealPlanner (profilo + autosave + immagini lato server)
 # Versione ottimizzata: auto load/save profilo, nessun pulsante manuale, cancellazione profili
-# NOTE: Funzionalità invariate. Rimossi duplicati, ottimizzazioni leggere, messaggi d'errore uniformati.
+# NOTE aggiornate:
+# - Profili persistenti su Google Sheet (_profiles)
+# - Parser boolean robusto per "favorite"
+# - ID ricette garantiti unici anche se mancano su più righe
+# - CSS più stabile (niente classi Emotion fragili)
+# - Immagini: fallback silenzioso (niente messaggi rumorosi)
+# - Flush salvataggio planner quando si cambia settimana
+# - Freeze header nelle worksheet create
+# - Lista spesa: elementi "Comprato" vanno in fondo
+# - Form ricette: pulsante "Clona"
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -36,6 +45,15 @@ def _safe_int(x, default=0):  # usato in vari punti
         return int(x)
     except Exception:
         return default
+
+def _to_bool(x) -> bool:
+    """Converte in booleano da varie rappresentazioni ('TRUE','false','1', ecc.)."""
+    if isinstance(x, bool):
+        return x
+    if x is None:
+        return False
+    s = str(x).strip().lower()
+    return s in {"true", "1", "yes", "y", "on"}
 
 # =========================
 # ENV & COSTANTI
@@ -109,15 +127,17 @@ def _fetch_image_bytes(u: str) -> bytes | None:
         return None
 
 def _render_image_from_url(url: str):
-    """Scarica e mostra un'immagine; ritorna True se mostrata."""
+    """Scarica e mostra un'immagine; ritorna True se mostrata.
+       Fallback silenzioso per non inquinare la UI con messaggi."""
     if not url:
-        st.info("Immagine non disponibile.")
+        st.empty()
         return False
     img = _fetch_image_bytes(url)
     if img:
         st.image(img, use_container_width=True)
         return True
-    st.info("Immagine non caricabile.")
+    # placeholder basso profilo
+    st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
     return False
 
 # =========================
@@ -198,7 +218,7 @@ def _secrets_healthcheck():
             st.caption(err)
 
 # =========================
-# PROFILI (worksheet per profilo)
+# PROFILI (worksheet per profilo) + Lista profili persistente
 # =========================
 def _sheet_name_for(base: str, profile: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_-]+", "_", (profile or "Default").strip())
@@ -208,9 +228,13 @@ def _get_or_create_ws(sh, title: str, headers: List[str]):
     try:
         ws = sh.worksheet(title)
     except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title=title, rows=400, cols=max(10, len(headers)))
+        ws = sh.add_worksheet(title=title, rows=400, cols=max(10, len(headers) or 10))
         if headers:
             ws.update([headers])
+            try:
+                ws.freeze(rows=1)
+            except Exception:
+                pass
     return ws
 
 def _safe_update(ws, rows: List[dict] | List[list]):
@@ -232,6 +256,29 @@ def _safe_update(ws, rows: List[dict] | List[list]):
         headers = rows[0] if rows else []
     ws.resize(rows=len(values), cols=len(headers))
     ws.update("A1", values, value_input_option="RAW")
+
+def _load_profiles_from_sheet():
+    gc = _get_sheet_client()
+    if gc is None:
+        return
+    sh = gc.open(SPREADSHEET_NAME)
+    ws = _get_or_create_ws(sh, "_profiles", ["profile"])
+    try:
+        rows = ws.get_all_records()
+    except Exception:
+        rows = []
+    plist = [r.get("profile", "").strip() for r in rows if r.get("profile")]
+    if plist:
+        st.session_state.profiles = sorted(set(["Default"] + plist))
+
+def _save_profiles_to_sheet():
+    gc = _get_sheet_client()
+    if gc is None:
+        return
+    sh = gc.open(SPREADSHEET_NAME)
+    ws = _get_or_create_ws(sh, "_profiles", ["profile"])
+    rows = [{"profile": p} for p in st.session_state.profiles if p.strip().lower() != "default"]
+    _safe_update(ws, rows)
 
 def delete_profile(profile: str):
     """Elimina le worksheet del profilo dallo Sheet e lo rimuove dalla lista profili."""
@@ -269,6 +316,11 @@ def delete_profile(profile: str):
         except Exception:
             pass
 
+    try:
+        _save_profiles_to_sheet()
+    except Exception:
+        pass
+
     st.success(
         f"Profilo '{profile}' eliminato. Schede rimosse: "
         f"{', '.join(deleted) if deleted else 'nessuna trovata'}."
@@ -292,6 +344,7 @@ def _demo_recipes():
                 {"name":"Pepe nero","qty":1,"unit":"tsp"},
             ],
             "instructions": "Cuoci la pasta, rosola la pancetta, unisci fuori dal fuoco uova e formaggio.",
+            "favorite": False,
         },
         {
             "id": 2, "name": "Stir Fry di Verdure", "category": "Vegetariana",
@@ -306,6 +359,7 @@ def _demo_recipes():
                 {"name":"Zenzero","qty":10,"unit":"g"},
             ],
             "instructions": "Salta le verdure e aggiungi salsa di soia e zenzero.",
+            "favorite": False,
         },
     ]
 
@@ -329,6 +383,10 @@ def _find_recipe(rid):
 
 def _get_new_recipe_id() -> int:
     return (max((r["id"] for r in st.session_state.recipes), default=0) + 1)
+
+def _get_new_recipe_id_from(used: set[int]) -> int:
+    m = max(used) if used else 0
+    return m + 1
 
 def _normalize_planner_meal_keys(planner, expected_meals):
     if not planner or "days" not in planner:
@@ -430,10 +488,14 @@ def _ensure_week_checklist():
     if not cur:
         df["Comprato"]=False
         st.session_state.shopping_checklists[wk]=df.to_dict("records")
-        return
-    prev={(r["Ingrediente"],r["Unità"]): r.get("Comprato",False) for r in cur}
-    df["Comprato"]=df.apply(lambda r: prev.get((r["Ingrediente"],r["Unità"]),False), axis=1)
-    st.session_state.shopping_checklists[wk]=df.to_dict("records")
+    else:
+        prev={(r["Ingrediente"],r["Unità"]): r.get("Comprato",False) for r in cur}
+        df["Comprato"]=df.apply(lambda r: prev.get((r["Ingrediente"],r["Unità"]),False), axis=1)
+        st.session_state.shopping_checklists[wk]=df.to_dict("records")
+    # ordina: comprati in fondo
+    recs = st.session_state.shopping_checklists[wk]
+    recs.sort(key=lambda r: (r.get("Comprato", False), r["Ingrediente"], r["Unità"]))
+    st.session_state.shopping_checklists[wk] = recs
 
 def _render_shopping_list_ui(embed: bool=True):
     _ensure_week_checklist()
@@ -442,7 +504,7 @@ def _render_shopping_list_ui(embed: bool=True):
         st.subheader("🧾 Lista della spesa — settimana corrente")
         st.caption(f"{st.session_state.week_start.strftime('%d/%m/%Y')} → {(st.session_state.week_start + timedelta(days=6)).strftime('%d/%m/%Y')}")
     for idx, row in enumerate(recs):
-    # card con bordo e checkbox più facile da toccare
+        # card con bordo e checkbox più facile da toccare
         with st.container(border=True):
             cols = [0.18, 0.52, 0.15, 0.15] if st.session_state.get("is_mobile") else [0.14, 0.56, 0.15, 0.15]
             c = st.columns(cols)
@@ -486,17 +548,28 @@ def load_from_sheets():
     )
     rows=ws_recipes.get_all_records()
     st.session_state.recipes=[]
+    used_ids = set()
     for r in rows:
-        try: ings=json.loads(r.get("ingredients_json","[]"))
-        except Exception: ings=[]
+        try:
+            ings=json.loads(r.get("ingredients_json","[]"))
+        except Exception:
+            ings=[]
+        rid = _safe_int(r.get("id",0))
+        if not rid or rid in used_ids:
+            rid = _get_new_recipe_id_from(used_ids)
+        used_ids.add(rid)
         st.session_state.recipes.append({
-            "id": _safe_int(r.get("id",0)) or _get_new_recipe_id(),
+            "id": rid,
             "name": r.get("name",""), "category": r.get("category",""),
             "time": _safe_int(r.get("time",0)), "servings": _safe_int(r.get("servings",2)) or 2,
             "image": r.get("image",""), "description": r.get("description",""),
             "instructions": r.get("instructions",""), "ingredients": ings,
-            "favorite": bool(r.get("favorite", False)),
+            "favorite": _to_bool(r.get("favorite", False)),
         })
+
+    # Se non ci sono ricette, popola con demo per evitare UI “vuota”
+    if not st.session_state.recipes:
+        st.session_state.recipes = _demo_recipes()
 
     # --- Planner: SOLO settimana corrente
     ws_slots=_get_or_create_ws(sh, _sheet_name_for("planner_slots",prof), ["week_start","date","meal","recipe_id","servings"])
@@ -543,7 +616,7 @@ def save_to_sheets():
             "description": r.get("description",""),
             "instructions": r.get("instructions",""),
             "ingredients_json": json.dumps(r.get("ingredients", []), ensure_ascii=False),
-            "favorite": bool(r.get("favorite", False)),
+            "favorite": "TRUE" if bool(r.get("favorite", False)) else "FALSE",
         } for r in st.session_state.get("recipes", [])]
         _safe_update(ws_recipes, rows_recipes)
 
@@ -608,9 +681,19 @@ div.stButton > button, div.stDownloadButton > button, a[kind="link"] {
 }
 div[data-baseweb="select"] > div { border-radius: 10px !important; min-height: 40px; }
 input[type="text"], input[type="number"], textarea, .st-af { border-radius: 10px !important; }
-@media (max-width: 640px){ .stButton>button, .stDownloadButton>button { width: 100%; } }
+/* immagini: fit e bordo */
+.stImage > img { object-fit: cover; width: 100%; max-height: 220px; border-radius: 12px; }
+
+/* container border: fallback generico, evita classi Emotion */
+div[role="region"][tabindex="0"] { padding: .6rem; }
+
+/* sticky bars su mobile */
+@media (max-width: 640px){
+  .stButton>button, .stDownloadButton>button { width: 100%; }
+}
 </style>
 """, unsafe_allow_html=True)
+
 # --- Mobile mode (toggle) + CSS mobile-first
 if "is_mobile" not in st.session_state:
     st.session_state.is_mobile = False  # puoi metterlo True se pubblichi solo per smartphone
@@ -641,9 +724,8 @@ input[type="text"], input[type="number"], textarea, .st-af { border-radius: 12px
 /* immagini: rapporto costante e taglio per ridurre altezza */
 .stImage > img { object-fit: cover; width: 100%; max-height: 220px; border-radius: 12px; }
 
-/* card compatte su mobile */
+/* titoli compatti su mobile */
 @media (max-width: 768px){
-  .st-emotion-cache-ue6h4q, .st-emotion-cache-azul3c { padding: .6rem !important; } /* container border */
   h1, h2, h3 { line-height: 1.2; }
   .stMarkdown p { margin-bottom: .3rem; }
   .st-expanderContent { padding-top: .4rem; padding-bottom: .4rem; }
@@ -702,6 +784,7 @@ with probe_col2:
 # bootstrap auto-load una sola volta
 if not st.session_state.get("_boot_loaded"):
     try:
+        _load_profiles_from_sheet()
         load_from_sheets()
     except Exception:
         st.info("Avvio con dati locali (nessun Google Sheet disponibile).")
@@ -743,6 +826,7 @@ with st.sidebar:
                     st.session_state.profiles.append(name)
                 st.session_state.current_profile = name
                 try:
+                    _save_profiles_to_sheet()
                     save_to_sheets()
                 except Exception:
                     pass
@@ -798,9 +882,12 @@ if page == "Pianificatore settimanale":
     nb = st.columns([1, 3, 1])
     with nb[0]:
         if st.button("◀︎", use_container_width=True, key="nav_prev"):
+            _save_planner_if_changed(debounce_sec=0)  # flush prima di cambiare settimana
             st.session_state.week_start -= timedelta(days=7)
-            try: load_from_sheets()
-            except Exception: st.session_state.planner = _empty_week(st.session_state.week_start)
+            try:
+                load_from_sheets()
+            except Exception:
+                st.session_state.planner = _empty_week(st.session_state.week_start)
     with nb[1]:
         st.caption(
             f"Settimana: {st.session_state.week_start.strftime('%d/%m/%Y')} - "
@@ -808,9 +895,12 @@ if page == "Pianificatore settimanale":
         )
     with nb[2]:
         if st.button("▶︎", use_container_width=True, key="nav_next"):
+            _save_planner_if_changed(debounce_sec=0)  # flush prima di cambiare settimana
             st.session_state.week_start += timedelta(days=7)
-            try: load_from_sheets()
-            except Exception: st.session_state.planner = _empty_week(st.session_state.week_start)
+            try:
+                load_from_sheets()
+            except Exception:
+                st.session_state.planner = _empty_week(st.session_state.week_start)
 
     # Precalcolo opzioni ricette (come prima)
     recipes = st.session_state.recipes
@@ -943,10 +1033,11 @@ elif page == "Ricette":
 
         instructions = st.text_area("Istruzioni", value=editing.get("instructions","") if editing else "", key=f"{cur_prefix}_instructions")
 
-        ca=st.columns(3)
+        ca=st.columns(4)
         with ca[0]: submit = st.form_submit_button("💾 Salva ricetta")
         with ca[1]: new_btn = st.form_submit_button("➕ Nuova (svuota)")
         with ca[2]: cancel_btn = st.form_submit_button("❌ Annulla modifica")
+        with ca[3]: clone_btn = st.form_submit_button("📄 Clona", help="Duplica la ricetta corrente")
 
         if submit:
             if not name.strip():
@@ -957,6 +1048,7 @@ elif page == "Ricette":
                     "time": int(time_min), "servings": int(servings),
                     "image": image.strip(), "description": description.strip(),
                     "ingredients": ingredients, "instructions": instructions.strip(),
+                    "favorite": bool(editing.get("favorite", False)) if editing else False,
                 }
                 if mode=="edit" and editing:
                     editing.update(payload)
@@ -976,6 +1068,17 @@ elif page == "Ricette":
 
                 st.session_state.recipe_form_mode="add"
                 st.session_state.editing_recipe_id=None
+
+        if clone_btn and editing:
+            clone = dict(editing)
+            clone["id"] = _get_new_recipe_id()
+            clone["name"] = f"{editing['name']} (copia)"
+            st.session_state.recipes.append(clone)
+            try:
+                save_to_sheets()
+                st.toast("Ricetta clonata ✓")
+            except Exception as e:
+                st.error(f"Salvataggio non riuscito: {e}")
 
         if new_btn:
             st.session_state.recipe_form_mode="add"

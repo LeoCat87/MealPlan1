@@ -1,16 +1,16 @@
 # app.py — MealPlanner (profilo + autosave + immagini lato server)
-# Versione ottimizzata (senza diagnostica UI):
+# Versione ottimizzata:
 # - Profili persistenti su Google Sheet (_profiles)
 # - Parser boolean robusto per "favorite"
 # - ID ricette garantiti unici anche se mancano su più righe
-# - CSS più stabile (niente classi Emotion fragili)
-# - Immagini: fallback silenzioso (niente messaggi rumorosi)
+# - CSS stabile (no classi Emotion fragili)
+# - Immagini: fallback silenzioso
 # - Flush salvataggio planner quando si cambia settimana
 # - Freeze header nelle worksheet create
-# - Lista spesa: elementi "Comprato" vanno in fondo
+# - Lista spesa: elementi "Comprato" in fondo, export solo Excel
 # - Form ricette: pulsante "Clona"
-# - RIMOSSA la diagnostica UI (expander, test connessione/scrittura, pulsante in sidebar)
-# - RIMOSSO il pulsante CSV dalla lista della spesa
+# - Diagnostica UI rimossa
+# - FIX: "Numero ingredienti" fuori dalla form (rerun immediato) + nessuna chiave duplicata
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -937,7 +937,7 @@ if page == "Pianificatore settimanale":
         _render_shopping_list_ui(embed=False)
 
 # =========================
-# RICETTE (form unico + autosave)
+# RICETTE (form unico + autosave) — con contatore ingredienti fuori dalla form
 # =========================
 elif page == "Ricette":
     st.header("Ricettario")
@@ -951,29 +951,37 @@ elif page == "Ricette":
         )
         st.session_state.scroll_to_form=False
 
-    # ---------- FORM (UNICO) ----------
+    # ---------- SETUP E CONTATORE (FUORI DALLA FORM) ----------
     st.subheader("Aggiungi / Modifica ricetta")
     mode=st.session_state.recipe_form_mode
     editing=_find_recipe(st.session_state.editing_recipe_id) if mode=="edit" else None
 
-    def _form_prefix(): 
-        return f"rf_{mode}_{st.session_state.editing_recipe_id or 'new'}"
+    def _form_prefix(): return f"rf_{mode}_{st.session_state.editing_recipe_id or 'new'}"
     cur_prefix=_form_prefix()
-    
+
+    # reset state dei widget rf_* quando cambia il form
     if st.session_state.get("_active_form_prefix") != cur_prefix:
         for k in list(st.session_state.keys()):
             if isinstance(k,str) and k.startswith("rf_"):
                 try: del st.session_state[k]
                 except Exception: pass
         st.session_state["_active_form_prefix"]=cur_prefix
+
     defaults = editing.get("ingredients", []) if editing else []
-    count_key = f"{cur_prefix}_ing_count"
-    st.number_input(
+
+    # contatore ingredienti con key "live" per evitare conflitti
+    count_key = f"{cur_prefix}_ing_count_live"
+    if count_key not in st.session_state:
+        st.session_state[count_key] = len(defaults) if defaults else 5
+
+    ingr_count = st.number_input(
         "Numero ingredienti", 0, 50,
-        value=len(defaults) if defaults else 5,
+        value=st.session_state[count_key],
         key=count_key
     )
-    ingr_count = int(st.session_state[count_key])
+    live_count = int(st.session_state[count_key])
+
+    # ---------- FORM ----------
     with st.form("recipe_form_main", clear_on_submit=(mode=="add")):
         name = st.text_input("Nome", value=editing["name"] if editing else "")
         category = st.text_input("Categoria", value=editing.get("category","") if editing else "")
@@ -984,19 +992,13 @@ elif page == "Ricette":
 
         exp_label = "Ingredienti (tocca per aprire)" if st.session_state.is_mobile else "Ingredienti"
         with st.expander(exp_label, expanded=not st.session_state.is_mobile):
-            defaults = editing.get("ingredients", []) if editing else []
-            ingr_count = st.number_input(
-                "Numero ingredienti", 0, 50,
-                value=len(defaults) if defaults else 5,
-                key=f"{cur_prefix}_ing_count"
-            )
-        
+            # NON mettere number_input qui dentro
             ingredients: List[Dict[str, Any]] = []
-            for idx in range(int(ingr_count)):
+            for idx in range(live_count):
                 c1, c2, c3 = st.columns([3, 1, 1])
                 d = defaults[idx] if idx < len(defaults) else {"name": "", "qty": 0, "unit": UNITS[0]}
                 name_i = c1.text_input(f"Ingrediente {idx+1} - nome", value=d.get("name",""), key=f"{cur_prefix}_ing_name_{idx}")
-                qty_i = c2.number_input(f"Quantità {idx+1}", min_value=0.0, value=float(d.get("qty",0)), key=f"{cur_prefix}_ing_qty_{idx}")
+                qty_i  = c2.number_input(f"Quantità {idx+1}", min_value=0.0, value=float(d.get("qty",0)), key=f"{cur_prefix}_ing_qty_{idx}")
                 unit_i = c3.selectbox(f"Unità {idx+1}", UNITS, index=(UNITS.index(d.get("unit")) if d.get("unit") in UNITS else 0), key=f"{cur_prefix}_ing_unit_{idx}")
                 if name_i:
                     ingredients.append({"name": name_i, "qty": qty_i, "unit": unit_i})

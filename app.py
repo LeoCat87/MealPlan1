@@ -1,6 +1,5 @@
 # app.py — MealPlanner (profilo + autosave + immagini lato server)
-# Versione ottimizzata: auto load/save profilo, nessun pulsante manuale, cancellazione profili
-# NOTE aggiornate:
+# Versione ottimizzata (senza diagnostica UI):
 # - Profili persistenti su Google Sheet (_profiles)
 # - Parser boolean robusto per "favorite"
 # - ID ricette garantiti unici anche se mancano su più righe
@@ -10,6 +9,7 @@
 # - Freeze header nelle worksheet create
 # - Lista spesa: elementi "Comprato" vanno in fondo
 # - Form ricette: pulsante "Clona"
+# - RIMOSSA la diagnostica UI (expander, test connessione/scrittura, pulsante in sidebar)
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -747,39 +747,7 @@ input[type="text"], input[type="number"], textarea, .st-af { border-radius: 12px
 
 _init_state()
 
-# =========================
-# Diagnostica (opzionale)
-# =========================
-with st.expander("🩺 Diagnostica (clicca per dettagli)", expanded=st.session_state.get("_show_diag_default", False)):
-    client, err = _get_sheet_client_and_error()
-    if client:
-        st.write("Google Sheets client: ✅ disponibile")
-    else:
-        st.write("Google Sheets client: ❌ non disponibile")
-        if err:
-            st.warning(f"Motivo: {err}")
-        st.info("Controlla i secrets in Streamlit Cloud → Settings → Secrets, sezione [gcp_service_account].")
-st.divider()
-st.subheader("Test di connessione e scrittura")
-
-probe_col1, probe_col2 = st.columns(2)
-with probe_col1:
-    if st.button("▶️ Prova scrittura su Sheets"):
-        try:
-            _sheets_write_probe()
-            st.success("Scrittura OK — controlla lo sheet '_diagnostics' nel tuo Google Sheet.")
-        except APIError as e:
-            st.error(f"Google Sheets APIError: {_gs_errmsg(e)}")
-        except Exception as e:
-            st.error(f"Errore nella prova di scrittura: {e}")
-
-with probe_col2:
-    if st.button("🔄 Controlla credenziali ora"):
-        client, err = _get_sheet_client_and_error()
-        if client:
-            st.success("✅ Credenziali funzionanti.")
-        else:
-            st.error(f"❌ Credenziali non valide: {err or 'Errore sconosciuto.'}")
+# (SEZIONE DIAGNOSTICA UI RIMOSSA)
 
 # bootstrap auto-load una sola volta
 if not st.session_state.get("_boot_loaded"):
@@ -864,9 +832,7 @@ with st.sidebar:
     else:
         st.info("Nessun profilo eliminabile (solo 'Default' presente).")
 
-    st.divider()
-    if st.button("🔍 Diagnostica Secrets"):
-        _secrets_healthcheck()
+    # PULSANTE "Diagnostica Secrets" RIMOSSO
 
 # Variabile locale sicura anche se ci sono rerun
 page = st.session_state.get("page", "Pianificatore settimanale")

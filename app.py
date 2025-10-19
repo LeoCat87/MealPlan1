@@ -969,17 +969,19 @@ elif page == "Ricette":
 
     defaults = editing.get("ingredients", []) if editing else []
 
-    # contatore ingredienti con key "live" per evitare conflitti
     count_key = f"{cur_prefix}_ing_count_live"
-    if count_key not in st.session_state:
-        st.session_state[count_key] = len(defaults) if defaults else 5
-
+    default_count = st.session_state.get(count_key, len(defaults) if defaults else 5)
+    
     ingr_count = st.number_input(
-        "Numero ingredienti", 0, 50,
-        value=st.session_state[count_key],
-        key=count_key
+        "Numero ingredienti",
+        min_value=0,
+        max_value=50,
+        value=default_count,
+        step=1,
+        key=count_key,
     )
-    live_count = int(st.session_state[count_key])
+    
+    live_count = int(ingr_count)   # oppure: int(st.session_state[count_key])
 
     # ---------- FORM ----------
     with st.form("recipe_form_main", clear_on_submit=(mode=="add")):

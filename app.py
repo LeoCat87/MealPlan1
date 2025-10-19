@@ -10,6 +10,7 @@
 # - Lista spesa: elementi "Comprato" vanno in fondo
 # - Form ricette: pulsante "Clona"
 # - RIMOSSA la diagnostica UI (expander, test connessione/scrittura, pulsante in sidebar)
+# - RIMOSSO il pulsante CSV dalla lista della spesa
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -522,12 +523,10 @@ def _render_shopping_list_ui(embed: bool=True):
     buf=BytesIO()
     with pd.ExcelWriter(buf, engine="xlsxwriter") as w:
         df.to_excel(w, index=False, sheet_name="ShoppingList")
+
+    # Solo export Excel (CSV rimosso)
     st.markdown('<div class="sticky-bottom">', unsafe_allow_html=True)
-    col_dl1, col_dl2 = st.columns(2)
-    with col_dl1:
-        st.download_button("⬇️ Excel", buf.getvalue(), "shopping_list.xlsx", use_container_width=True)
-    with col_dl2:
-        st.download_button("⬇️ CSV", df.to_csv(index=False).encode("utf-8"), "shopping_list.csv", use_container_width=True)
+    st.download_button("⬇️ Excel", buf.getvalue(), "shopping_list.xlsx", use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
 # =========================
@@ -747,8 +746,6 @@ input[type="text"], input[type="number"], textarea, .st-af { border-radius: 12px
 
 _init_state()
 
-# (SEZIONE DIAGNOSTICA UI RIMOSSA)
-
 # bootstrap auto-load una sola volta
 if not st.session_state.get("_boot_loaded"):
     try:
@@ -831,8 +828,6 @@ with st.sidebar:
                 st.warning("Digita 'ELIMINA' nel campo di conferma per procedere.")
     else:
         st.info("Nessun profilo eliminabile (solo 'Default' presente).")
-
-    # PULSANTE "Diagnostica Secrets" RIMOSSO
 
 # Variabile locale sicura anche se ci sono rerun
 page = st.session_state.get("page", "Pianificatore settimanale")

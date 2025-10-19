@@ -956,15 +956,24 @@ elif page == "Ricette":
     mode=st.session_state.recipe_form_mode
     editing=_find_recipe(st.session_state.editing_recipe_id) if mode=="edit" else None
 
-    def _form_prefix(): return f"rf_{mode}_{st.session_state.editing_recipe_id or 'new'}"
+    def _form_prefix(): 
+        return f"rf_{mode}_{st.session_state.editing_recipe_id or 'new'}"
     cur_prefix=_form_prefix()
+    
     if st.session_state.get("_active_form_prefix") != cur_prefix:
         for k in list(st.session_state.keys()):
             if isinstance(k,str) and k.startswith("rf_"):
                 try: del st.session_state[k]
                 except Exception: pass
         st.session_state["_active_form_prefix"]=cur_prefix
-
+    defaults = editing.get("ingredients", []) if editing else []
+    count_key = f"{cur_prefix}_ing_count"
+    st.number_input(
+        "Numero ingredienti", 0, 50,
+        value=len(defaults) if defaults else 5,
+        key=count_key
+    )
+    ingr_count = int(st.session_state[count_key])
     with st.form("recipe_form_main", clear_on_submit=(mode=="add")):
         name = st.text_input("Nome", value=editing["name"] if editing else "")
         category = st.text_input("Categoria", value=editing.get("category","") if editing else "")

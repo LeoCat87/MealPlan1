@@ -1,6 +1,16 @@
 # app.py — MealPlanner (profilo + autosave + immagini lato server)
-# Versione ottimizzata: auto load/save profilo, nessun pulsante manuale, cancellazione profili
-# NOTE: Funzionalità invariate. Rimossi duplicati, ottimizzazioni leggere, messaggi d'errore uniformati.
+# Versione ottimizzata:
+# - Profili persistenti su Google Sheet (_profiles)
+# - Parser boolean robusto per "favorite"
+# - ID ricette garantiti unici anche se mancano su più righe
+# - CSS stabile (no classi Emotion fragili)
+# - Immagini: fallback silenzioso
+# - Flush salvataggio planner quando si cambia settimana
+# - Freeze header nelle worksheet create
+# - Lista spesa: elementi "Comprato" in fondo, export solo Excel
+# - Form ricette: pulsante "Clona"
+# - Diagnostica UI rimossa
+# - FIX: "Numero ingredienti" fuori dalla form (rerun immediato) + nessuna chiave duplicata
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -36,6 +46,15 @@ def _safe_int(x, default=0):  # usato in vari punti
         return int(x)
     except Exception:
         return default
+
+def _to_bool(x) -> bool:
+    """Converte in booleano da varie rappresentazioni ('TRUE','false','1', ecc.)."""
+    if isinstance(x, bool):
+        return x
+    if x is None:
+        return False
+    s = str(x).strip().lower()
+    return s in {"true", "1", "yes", "y", "on"}
 
 # =========================
 # ENV & COSTANTI
@@ -109,15 +128,17 @@ def _fetch_image_bytes(u: str) -> bytes | None:
         return None
 
 def _render_image_from_url(url: str):
-    """Scarica e mostra un'immagine; ritorna True se mostrata."""
+    """Scarica e mostra un'immagine; ritorna True se mostrata.
+       Fallback silenzioso per non inquinare la UI con messaggi."""
     if not url:
-        st.info("Immagine non disponibile.")
+        st.empty()
         return False
     img = _fetch_image_bytes(url)
     if img:
         st.image(img, use_container_width=True)
         return True
-    st.info("Immagine non caricabile.")
+    # placeholder basso profilo
+    st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
     return False
 
 # =========================
@@ -198,7 +219,7 @@ def _secrets_healthcheck():
             st.caption(err)
 
 # =========================
-# PROFILI (worksheet per profilo)
+# PROFILI (worksheet per profilo) + Lista profili persistente
 # =========================
 def _sheet_name_for(base: str, profile: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_-]+", "_", (profile or "Default").strip())
@@ -208,9 +229,13 @@ def _get_or_create_ws(sh, title: str, headers: List[str]):
     try:
         ws = sh.worksheet(title)
     except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title=title, rows=400, cols=max(10, len(headers)))
+        ws = sh.add_worksheet(title=title, rows=400, cols=max(10, len(headers) or 10))
         if headers:
             ws.update([headers])
+            try:
+                ws.freeze(rows=1)
+            except Exception:
+                pass
     return ws
 
 def _safe_update(ws, rows: List[dict] | List[list]):
@@ -232,6 +257,29 @@ def _safe_update(ws, rows: List[dict] | List[list]):
         headers = rows[0] if rows else []
     ws.resize(rows=len(values), cols=len(headers))
     ws.update("A1", values, value_input_option="RAW")
+
+def _load_profiles_from_sheet():
+    gc = _get_sheet_client()
+    if gc is None:
+        return
+    sh = gc.open(SPREADSHEET_NAME)
+    ws = _get_or_create_ws(sh, "_profiles", ["profile"])
+    try:
+        rows = ws.get_all_records()
+    except Exception:
+        rows = []
+    plist = [r.get("profile", "").strip() for r in rows if r.get("profile")]
+    if plist:
+        st.session_state.profiles = sorted(set(["Default"] + plist))
+
+def _save_profiles_to_sheet():
+    gc = _get_sheet_client()
+    if gc is None:
+        return
+    sh = gc.open(SPREADSHEET_NAME)
+    ws = _get_or_create_ws(sh, "_profiles", ["profile"])
+    rows = [{"profile": p} for p in st.session_state.profiles if p.strip().lower() != "default"]
+    _safe_update(ws, rows)
 
 def delete_profile(profile: str):
     """Elimina le worksheet del profilo dallo Sheet e lo rimuove dalla lista profili."""
@@ -269,6 +317,11 @@ def delete_profile(profile: str):
         except Exception:
             pass
 
+    try:
+        _save_profiles_to_sheet()
+    except Exception:
+        pass
+
     st.success(
         f"Profilo '{profile}' eliminato. Schede rimosse: "
         f"{', '.join(deleted) if deleted else 'nessuna trovata'}."
@@ -292,6 +345,7 @@ def _demo_recipes():
                 {"name":"Pepe nero","qty":1,"unit":"tsp"},
             ],
             "instructions": "Cuoci la pasta, rosola la pancetta, unisci fuori dal fuoco uova e formaggio.",
+            "favorite": False,
         },
         {
             "id": 2, "name": "Stir Fry di Verdure", "category": "Vegetariana",
@@ -306,6 +360,7 @@ def _demo_recipes():
                 {"name":"Zenzero","qty":10,"unit":"g"},
             ],
             "instructions": "Salta le verdure e aggiungi salsa di soia e zenzero.",
+            "favorite": False,
         },
     ]
 
@@ -329,6 +384,10 @@ def _find_recipe(rid):
 
 def _get_new_recipe_id() -> int:
     return (max((r["id"] for r in st.session_state.recipes), default=0) + 1)
+
+def _get_new_recipe_id_from(used: set[int]) -> int:
+    m = max(used) if used else 0
+    return m + 1
 
 def _normalize_planner_meal_keys(planner, expected_meals):
     if not planner or "days" not in planner:
@@ -430,10 +489,14 @@ def _ensure_week_checklist():
     if not cur:
         df["Comprato"]=False
         st.session_state.shopping_checklists[wk]=df.to_dict("records")
-        return
-    prev={(r["Ingrediente"],r["Unità"]): r.get("Comprato",False) for r in cur}
-    df["Comprato"]=df.apply(lambda r: prev.get((r["Ingrediente"],r["Unità"]),False), axis=1)
-    st.session_state.shopping_checklists[wk]=df.to_dict("records")
+    else:
+        prev={(r["Ingrediente"],r["Unità"]): r.get("Comprato",False) for r in cur}
+        df["Comprato"]=df.apply(lambda r: prev.get((r["Ingrediente"],r["Unità"]),False), axis=1)
+        st.session_state.shopping_checklists[wk]=df.to_dict("records")
+    # ordina: comprati in fondo
+    recs = st.session_state.shopping_checklists[wk]
+    recs.sort(key=lambda r: (r.get("Comprato", False), r["Ingrediente"], r["Unità"]))
+    st.session_state.shopping_checklists[wk] = recs
 
 def _render_shopping_list_ui(embed: bool=True):
     _ensure_week_checklist()
@@ -441,20 +504,30 @@ def _render_shopping_list_ui(embed: bool=True):
     if embed:
         st.subheader("🧾 Lista della spesa — settimana corrente")
         st.caption(f"{st.session_state.week_start.strftime('%d/%m/%Y')} → {(st.session_state.week_start + timedelta(days=6)).strftime('%d/%m/%Y')}")
-    for idx,row in enumerate(recs):
-        c=st.columns([0.08,0.62,0.15,0.15])
-        with c[0]:
-            bought=st.checkbox("", value=row.get("Comprato",False), key=f"buy_{wk}_{idx}")
-        with c[1]: st.write(row["Ingrediente"])
-        with c[2]: st.write(row["Quantità"])
-        with c[3]: st.write(row["Unità"])
-        recs[idx]["Comprato"]=bought
+    for idx, row in enumerate(recs):
+        # card con bordo e checkbox più facile da toccare
+        with st.container(border=True):
+            cols = [0.18, 0.52, 0.15, 0.15] if st.session_state.get("is_mobile") else [0.14, 0.56, 0.15, 0.15]
+            c = st.columns(cols)
+            with c[0]:
+                bought = st.checkbox(" ", value=row.get("Comprato", False), key=f"buy_{wk}_{idx}")
+            with c[1]:
+                st.write(f"**{row['Ingrediente']}**")
+            with c[2]:
+                st.write(row["Quantità"])
+            with c[3]:
+                st.write(row["Unità"])
+            recs[idx]["Comprato"] = bought
+
     df=pd.DataFrame(recs)
     buf=BytesIO()
     with pd.ExcelWriter(buf, engine="xlsxwriter") as w:
         df.to_excel(w, index=False, sheet_name="ShoppingList")
-    st.download_button("⬇️ Scarica (Excel)", buf.getvalue(), "shopping_list.xlsx", use_container_width=True)
-    st.download_button("⬇️ Scarica (CSV)", df.to_csv(index=False).encode("utf-8"), "shopping_list.csv", use_container_width=True)
+
+    # Solo export Excel (CSV rimosso)
+    st.markdown('<div class="sticky-bottom">', unsafe_allow_html=True)
+    st.download_button("⬇️ Excel", buf.getvalue(), "shopping_list.xlsx", use_container_width=True)
+    st.markdown('</div>', unsafe_allow_html=True)
 
 # =========================
 # GOOGLE SHEETS: LOAD / SAVE (profilo) — SAFE
@@ -474,17 +547,28 @@ def load_from_sheets():
     )
     rows=ws_recipes.get_all_records()
     st.session_state.recipes=[]
+    used_ids = set()
     for r in rows:
-        try: ings=json.loads(r.get("ingredients_json","[]"))
-        except Exception: ings=[]
+        try:
+            ings=json.loads(r.get("ingredients_json","[]"))
+        except Exception:
+            ings=[]
+        rid = _safe_int(r.get("id",0))
+        if not rid or rid in used_ids:
+            rid = _get_new_recipe_id_from(used_ids)
+        used_ids.add(rid)
         st.session_state.recipes.append({
-            "id": _safe_int(r.get("id",0)) or _get_new_recipe_id(),
+            "id": rid,
             "name": r.get("name",""), "category": r.get("category",""),
             "time": _safe_int(r.get("time",0)), "servings": _safe_int(r.get("servings",2)) or 2,
             "image": r.get("image",""), "description": r.get("description",""),
             "instructions": r.get("instructions",""), "ingredients": ings,
-            "favorite": bool(r.get("favorite", False)),
+            "favorite": _to_bool(r.get("favorite", False)),
         })
+
+    # Se non ci sono ricette, popola con demo per evitare UI “vuota”
+    if not st.session_state.recipes:
+        st.session_state.recipes = _demo_recipes()
 
     # --- Planner: SOLO settimana corrente
     ws_slots=_get_or_create_ws(sh, _sheet_name_for("planner_slots",prof), ["week_start","date","meal","recipe_id","servings"])
@@ -531,7 +615,7 @@ def save_to_sheets():
             "description": r.get("description",""),
             "instructions": r.get("instructions",""),
             "ingredients_json": json.dumps(r.get("ingredients", []), ensure_ascii=False),
-            "favorite": bool(r.get("favorite", False)),
+            "favorite": "TRUE" if bool(r.get("favorite", False)) else "FALSE",
         } for r in st.session_state.get("recipes", [])]
         _safe_update(ws_recipes, rows_recipes)
 
@@ -596,49 +680,76 @@ div.stButton > button, div.stDownloadButton > button, a[kind="link"] {
 }
 div[data-baseweb="select"] > div { border-radius: 10px !important; min-height: 40px; }
 input[type="text"], input[type="number"], textarea, .st-af { border-radius: 10px !important; }
-@media (max-width: 640px){ .stButton>button, .stDownloadButton>button { width: 100%; } }
+/* immagini: fit e bordo */
+.stImage > img { object-fit: cover; width: 100%; max-height: 220px; border-radius: 12px; }
+
+/* container border: fallback generico, evita classi Emotion */
+div[role="region"][tabindex="0"] { padding: .6rem; }
+
+/* sticky bars su mobile */
+@media (max-width: 640px){
+  .stButton>button, .stDownloadButton>button { width: 100%; }
+}
+</style>
+""", unsafe_allow_html=True)
+
+# --- Mobile mode (toggle) + CSS mobile-first
+if "is_mobile" not in st.session_state:
+    st.session_state.is_mobile = False  # puoi metterlo True se pubblichi solo per smartphone
+
+with st.sidebar:
+    st.toggle("📱 Modalità mobile", key="is_mobile", help="Usa layout verticale, bottoni più grandi, meno scroll")
+
+st.markdown("""
+<style>
+/* spacing generali */
+.block-container { padding-top: .6rem; padding-bottom: 1.2rem; }
+
+/* sidebar più stretta su mobile */
+@media (max-width: 768px){
+  section[data-testid="stSidebar"] { width: 280px !important; min-width: 280px !important; }
+}
+
+/* header trasparente già presente */
+[data-testid="stHeader"] { background: transparent; }
+
+/* pulsanti e select: touch-friendly */
+div.stButton > button, div.stDownloadButton > button, a[kind="link"] {
+  border-radius: 12px; padding: .8rem 1rem; font-weight: 600; border: 1px solid rgba(255,255,255,0.12);
+}
+div[data-baseweb="select"] > div { border-radius: 12px !important; min-height: 48px; }
+input[type="text"], input[type="number"], textarea, .st-af { border-radius: 12px !important; }
+
+/* immagini: rapporto costante e taglio per ridurre altezza */
+.stImage > img { object-fit: cover; width: 100%; max-height: 220px; border-radius: 12px; }
+
+/* titoli compatti su mobile */
+@media (max-width: 768px){
+  h1, h2, h3 { line-height: 1.2; }
+  .stMarkdown p { margin-bottom: .3rem; }
+  .st-expanderContent { padding-top: .4rem; padding-bottom: .4rem; }
+}
+
+/* top navigator sticky */
+#weekbar { position: sticky; top: 0; z-index: 20; backdrop-filter: blur(6px); padding: .4rem 0; }
+
+/* bottom actions sticky su mobile (download lista ecc.) */
+@media (max-width: 768px){
+  .sticky-bottom {
+    position: sticky; bottom: 0; z-index: 25; padding: .5rem 0 .3rem 0;
+    background: linear-gradient(180deg, transparent, rgba(0,0,0,.10));
+  }
+  .sticky-bottom > div > button { width: 100% !important; }
+}
 </style>
 """, unsafe_allow_html=True)
 
 _init_state()
 
-# =========================
-# Diagnostica (opzionale)
-# =========================
-with st.expander("🩺 Diagnostica (clicca per dettagli)", expanded=st.session_state.get("_show_diag_default", False)):
-    client, err = _get_sheet_client_and_error()
-    if client:
-        st.write("Google Sheets client: ✅ disponibile")
-    else:
-        st.write("Google Sheets client: ❌ non disponibile")
-        if err:
-            st.warning(f"Motivo: {err}")
-        st.info("Controlla i secrets in Streamlit Cloud → Settings → Secrets, sezione [gcp_service_account].")
-st.divider()
-st.subheader("Test di connessione e scrittura")
-
-probe_col1, probe_col2 = st.columns(2)
-with probe_col1:
-    if st.button("▶️ Prova scrittura su Sheets"):
-        try:
-            _sheets_write_probe()
-            st.success("Scrittura OK — controlla lo sheet '_diagnostics' nel tuo Google Sheet.")
-        except APIError as e:
-            st.error(f"Google Sheets APIError: {_gs_errmsg(e)}")
-        except Exception as e:
-            st.error(f"Errore nella prova di scrittura: {e}")
-
-with probe_col2:
-    if st.button("🔄 Controlla credenziali ora"):
-        client, err = _get_sheet_client_and_error()
-        if client:
-            st.success("✅ Credenziali funzionanti.")
-        else:
-            st.error(f"❌ Credenziali non valide: {err or 'Errore sconosciuto.'}")
-
 # bootstrap auto-load una sola volta
 if not st.session_state.get("_boot_loaded"):
     try:
+        _load_profiles_from_sheet()
         load_from_sheets()
     except Exception:
         st.info("Avvio con dati locali (nessun Google Sheet disponibile).")
@@ -680,6 +791,7 @@ with st.sidebar:
                     st.session_state.profiles.append(name)
                 st.session_state.current_profile = name
                 try:
+                    _save_profiles_to_sheet()
                     save_to_sheets()
                 except Exception:
                     pass
@@ -717,10 +829,6 @@ with st.sidebar:
     else:
         st.info("Nessun profilo eliminabile (solo 'Default' presente).")
 
-    st.divider()
-    if st.button("🔍 Diagnostica Secrets"):
-        _secrets_healthcheck()
-
 # Variabile locale sicura anche se ci sono rerun
 page = st.session_state.get("page", "Pianificatore settimanale")
 
@@ -730,68 +838,106 @@ page = st.session_state.get("page", "Pianificatore settimanale")
 if page == "Pianificatore settimanale":
     st.header("Pianificatore settimanale")
 
-    nav = st.columns([0.5,1,1,1,1,1,1,1,0.5])
-    with nav[0]:
+    # --- barra settimana sticky (sempre comoda su mobile)
+    st.markdown('<div id="weekbar"></div>', unsafe_allow_html=True)
+    nb = st.columns([1, 3, 1])
+    with nb[0]:
         if st.button("◀︎", use_container_width=True, key="nav_prev"):
+            _save_planner_if_changed(debounce_sec=0)  # flush prima di cambiare settimana
             st.session_state.week_start -= timedelta(days=7)
             try:
                 load_from_sheets()
             except Exception:
                 st.session_state.planner = _empty_week(st.session_state.week_start)
-    with nav[-1]:
+    with nb[1]:
+        st.caption(
+            f"Settimana: {st.session_state.week_start.strftime('%d/%m/%Y')} - "
+            f"{(st.session_state.week_start + timedelta(days=6)).strftime('%d/%m/%Y')}"
+        )
+    with nb[2]:
         if st.button("▶︎", use_container_width=True, key="nav_next"):
+            _save_planner_if_changed(debounce_sec=0)  # flush prima di cambiare settimana
             st.session_state.week_start += timedelta(days=7)
             try:
                 load_from_sheets()
             except Exception:
                 st.session_state.planner = _empty_week(st.session_state.week_start)
 
-    st.caption(
-        f"Settimana: {st.session_state.week_start.strftime('%d/%m/%Y')} - "
-        f"{(st.session_state.week_start + timedelta(days=6)).strftime('%d/%m/%Y')}"
-    )
-
-    # Pre-calcolo mappa opzioni ricette (performance)
+    # Precalcolo opzioni ricette (come prima)
     recipes = st.session_state.recipes
     opts_map = {f'{r["name"]} · {r.get("time","-")} min': r["id"] for r in recipes}
     id_to_label = {v:k for k,v in opts_map.items()}
     base_opts = ["-"] + list(opts_map.keys())
 
-    day_cols = nav[1:-1]
-    for i, col in enumerate(day_cols):
-        d = st.session_state.week_start + timedelta(days=i)
-        with col:
-            st.markdown(f"### {DAYS_LABELS[i]}\n**{d.day}**")
+    # --- DESKTOP: 7 colonne come già facevi
+    if not st.session_state.is_mobile:
+        day_cols = st.columns([0.5,1,1,1,1,1,1,1,0.5])[1:-1]
+        for i, col in enumerate(day_cols):
+            d = st.session_state.week_start + timedelta(days=i)
+            with col:
+                st.markdown(f"### {DAYS_LABELS[i]}\n**{d.day}**")
+                for meal in MEALS:
+                    slot = st.session_state.planner["days"][i][meal]
+                    current = "-" if not slot.get("recipe_id") else id_to_label.get(slot["recipe_id"], "-")
+                    opts = base_opts if current == "-" else (["-"] + ([current] if current not in base_opts else []) + [o for o in base_opts if o != current and o != "-"])
+                    sel_key=f"planner_sel_{i}_{meal}_{d.isoformat()}"
+                    serv_key=f"planner_serv_{i}_{meal}_{d.isoformat()}"
+                    selected = st.selectbox(meal, opts, index=opts.index(current) if current in opts else 0, key=sel_key, label_visibility="visible")
+                    if selected != "-":
+                        slot["recipe_id"] = opts_map.get(selected, slot.get("recipe_id"))
+                        rec=_find_recipe(slot["recipe_id"])
+                        if rec:
+                            with st.expander("Dettagli", expanded=False):
+                                _render_image_from_url(rec.get("image"))
+                                st.caption(f"⏱ {rec['time']} min · Categoria: {rec.get('category','-')}")
+                                st.write(rec.get("description",""))
+                            slot["servings"] = st.number_input("Porzioni", 1, 12, value=slot.get("servings",2), key=serv_key)
+                    else:
+                        slot["recipe_id"]=None
+
+    # --- MOBILE: lista verticale per giorno con accordion compatti
+    else:
+        for i in range(7):
+            d = st.session_state.week_start + timedelta(days=i)
+            st.markdown(f"### {DAYS_LABELS[i]} · **{d.day}**")
             for meal in MEALS:
                 slot = st.session_state.planner["days"][i][meal]
-                # current label
-                current = "-"
-                if slot.get("recipe_id"):
-                    current = id_to_label.get(slot["recipe_id"], "-")
+                current = "-" if not slot.get("recipe_id") else id_to_label.get(slot["recipe_id"], "-")
                 opts = base_opts if current == "-" else (["-"] + ([current] if current not in base_opts else []) + [o for o in base_opts if o != current and o != "-"])
+                sel_key=f"m_planner_sel_{i}_{meal}_{d.isoformat()}"
+                serv_key=f"m_planner_serv_{i}_{meal}_{d.isoformat()}"
 
-                sel_key=f"planner_sel_{i}_{meal}_{d.isoformat()}"
-                serv_key=f"planner_serv_{i}_{meal}_{d.isoformat()}"
-                selected = st.selectbox(meal, opts, index=opts.index(current) if current in opts else 0, key=sel_key)
+                # riga compatta: titolo pasto + select + stepper porzioni in linea
+                c1, c2 = st.columns([2, 1])
+                with c1:
+                    selected = st.selectbox(
+                        f"{meal}", opts, index=opts.index(current) if current in opts else 0,
+                        key=sel_key, label_visibility="visible"
+                    )
+                with c2:
+                    slot["servings"] = st.number_input("Porz.", 1, 12, value=slot.get("servings",2), key=serv_key, label_visibility="visible")
 
                 if selected != "-":
                     slot["recipe_id"] = opts_map.get(selected, slot.get("recipe_id"))
-                    rec=_find_recipe(slot["recipe_id"])
+                    rec = _find_recipe(slot["recipe_id"])
                     if rec:
-                        with st.expander("Dettagli", expanded=False):
+                        with st.expander("Dettagli ricetta"):
                             _render_image_from_url(rec.get("image"))
                             st.caption(f"⏱ {rec['time']} min · Categoria: {rec.get('category','-')}")
-                            st.write(rec.get("description",""))
-                        slot["servings"] = st.number_input("Porzioni", 1, 12, value=slot.get("servings",2), key=serv_key)
+                            if rec.get("description"): st.write(rec.get("description"))
                 else:
-                    slot["recipe_id"]=None
+                    slot["recipe_id"] = None
+
+            st.divider()
 
     _save_planner_if_changed()
-    with st.expander("Lista della spesa (settimana corrente)", expanded=True):
+
+    # Lista spesa: su mobile chiusa di default + azioni sticky in basso
+    with st.expander("🧾 Lista della spesa (settimana corrente)", expanded=not st.session_state.is_mobile):
         _render_shopping_list_ui(embed=False)
 
 # =========================
-# RICETTE (form unico + autosave)
+# RICETTE (form unico + autosave) — con contatore ingredienti fuori dalla form
 # =========================
 elif page == "Ricette":
     st.header("Ricettario")
@@ -805,13 +951,15 @@ elif page == "Ricette":
         )
         st.session_state.scroll_to_form=False
 
-    # ---------- FORM (UNICO) ----------
+    # ---------- SETUP E CONTATORE (FUORI DALLA FORM) ----------
     st.subheader("Aggiungi / Modifica ricetta")
     mode=st.session_state.recipe_form_mode
     editing=_find_recipe(st.session_state.editing_recipe_id) if mode=="edit" else None
 
     def _form_prefix(): return f"rf_{mode}_{st.session_state.editing_recipe_id or 'new'}"
     cur_prefix=_form_prefix()
+
+    # reset state dei widget rf_* quando cambia il form
     if st.session_state.get("_active_form_prefix") != cur_prefix:
         for k in list(st.session_state.keys()):
             if isinstance(k,str) and k.startswith("rf_"):
@@ -819,6 +967,21 @@ elif page == "Ricette":
                 except Exception: pass
         st.session_state["_active_form_prefix"]=cur_prefix
 
+    defaults = editing.get("ingredients", []) if editing else []
+
+    # contatore ingredienti con key "live" per evitare conflitti
+    count_key = f"{cur_prefix}_ing_count_live"
+    if count_key not in st.session_state:
+        st.session_state[count_key] = len(defaults) if defaults else 5
+
+    ingr_count = st.number_input(
+        "Numero ingredienti", 0, 50,
+        value=st.session_state[count_key],
+        key=count_key
+    )
+    live_count = int(st.session_state[count_key])
+
+    # ---------- FORM ----------
     with st.form("recipe_form_main", clear_on_submit=(mode=="add")):
         name = st.text_input("Nome", value=editing["name"] if editing else "")
         category = st.text_input("Categoria", value=editing.get("category","") if editing else "")
@@ -827,25 +990,26 @@ elif page == "Ricette":
         image = st.text_input("URL immagine (opzionale)", value=editing.get("image","") if editing else "")
         description = st.text_area("Descrizione", value=editing.get("description","") if editing else "")
 
-        st.markdown("**Ingredienti**")
-        defaults = editing.get("ingredients", []) if editing else []
-        ingr_count = st.number_input("Numero ingredienti", 0, 50, value=len(defaults) if defaults else 5, key=f"{cur_prefix}_ing_count")
-
-        ingredients: List[Dict[str, Any]] = []
-        for idx in range(int(ingr_count)):
-            c1,c2,c3=st.columns([3,1,1])
-            d = defaults[idx] if idx < len(defaults) else {"name":"","qty":0,"unit":UNITS[0]}
-            name_i = c1.text_input(f"Ingrediente {idx+1} - nome", value=d.get("name",""), key=f"{cur_prefix}_ing_name_{idx}")
-            qty_i = c2.number_input(f"Quantità {idx+1}", min_value=0.0, value=float(d.get("qty",0)), key=f"{cur_prefix}_ing_qty_{idx}")
-            unit_i = c3.selectbox(f"Unità {idx+1}", UNITS, index=(UNITS.index(d.get("unit")) if d.get("unit") in UNITS else 0), key=f"{cur_prefix}_ing_unit_{idx}")
-            if name_i: ingredients.append({"name":name_i,"qty":qty_i,"unit":unit_i})
+        exp_label = "Ingredienti (tocca per aprire)" if st.session_state.is_mobile else "Ingredienti"
+        with st.expander(exp_label, expanded=not st.session_state.is_mobile):
+            # NON mettere number_input qui dentro
+            ingredients: List[Dict[str, Any]] = []
+            for idx in range(live_count):
+                c1, c2, c3 = st.columns([3, 1, 1])
+                d = defaults[idx] if idx < len(defaults) else {"name": "", "qty": 0, "unit": UNITS[0]}
+                name_i = c1.text_input(f"Ingrediente {idx+1} - nome", value=d.get("name",""), key=f"{cur_prefix}_ing_name_{idx}")
+                qty_i  = c2.number_input(f"Quantità {idx+1}", min_value=0.0, value=float(d.get("qty",0)), key=f"{cur_prefix}_ing_qty_{idx}")
+                unit_i = c3.selectbox(f"Unità {idx+1}", UNITS, index=(UNITS.index(d.get("unit")) if d.get("unit") in UNITS else 0), key=f"{cur_prefix}_ing_unit_{idx}")
+                if name_i:
+                    ingredients.append({"name": name_i, "qty": qty_i, "unit": unit_i})
 
         instructions = st.text_area("Istruzioni", value=editing.get("instructions","") if editing else "", key=f"{cur_prefix}_instructions")
 
-        ca=st.columns(3)
+        ca=st.columns(4)
         with ca[0]: submit = st.form_submit_button("💾 Salva ricetta")
         with ca[1]: new_btn = st.form_submit_button("➕ Nuova (svuota)")
         with ca[2]: cancel_btn = st.form_submit_button("❌ Annulla modifica")
+        with ca[3]: clone_btn = st.form_submit_button("📄 Clona", help="Duplica la ricetta corrente")
 
         if submit:
             if not name.strip():
@@ -856,6 +1020,7 @@ elif page == "Ricette":
                     "time": int(time_min), "servings": int(servings),
                     "image": image.strip(), "description": description.strip(),
                     "ingredients": ingredients, "instructions": instructions.strip(),
+                    "favorite": bool(editing.get("favorite", False)) if editing else False,
                 }
                 if mode=="edit" and editing:
                     editing.update(payload)
@@ -875,6 +1040,17 @@ elif page == "Ricette":
 
                 st.session_state.recipe_form_mode="add"
                 st.session_state.editing_recipe_id=None
+
+        if clone_btn and editing:
+            clone = dict(editing)
+            clone["id"] = _get_new_recipe_id()
+            clone["name"] = f"{editing['name']} (copia)"
+            st.session_state.recipes.append(clone)
+            try:
+                save_to_sheets()
+                st.toast("Ricetta clonata ✓")
+            except Exception as e:
+                st.error(f"Salvataggio non riuscito: {e}")
 
         if new_btn:
             st.session_state.recipe_form_mode="add"
@@ -920,11 +1096,15 @@ elif page == "Ricette":
                 st.subheader(r["name"])
                 st.caption(f"Categoria: {r.get('category','-')} · ⏱ {r.get('time','-')} min · Porzioni base: {r.get('servings','-')}")
                 if r.get("description"): st.write(r["description"])
-                with st.expander("Ingredienti"):
-                    df=pd.DataFrame(r.get("ingredients", []))
-                    if not df.empty: st.dataframe(df, hide_index=True, use_container_width=True)
+                with st.expander("Ingredienti", expanded=not st.session_state.is_mobile):
+                    df = pd.DataFrame(r.get("ingredients", []))
+                    if not df.empty:
+                        st.dataframe(df, hide_index=True, use_container_width=True)
+                
                 if r.get("instructions"):
-                    with st.expander("Istruzioni"): st.write(r["instructions"])
+                    with st.expander("Istruzioni", expanded=False):
+                        st.write(r["instructions"])
+
                 b1,b2=st.columns(2)
                 if b1.button("✏️ Modifica", key=f"edit_{r['id']}"):
                     st.session_state.recipe_form_mode="edit"
